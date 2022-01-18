@@ -1,56 +1,9 @@
 from evmdasm import EvmBytecode
 import math
 import queue
-
-# 用于处理 16 进制
-class Hex:
-    def __init__(self, num):
-        if type(num) == int:
-            self.hex_str = hex(num)
-            self.num = num
-        elif type(num) == str:
-            self.hex_str = hex(int(num, 16))
-            self.num = int(num, 16)
-        else:
-            raise TypeError
-
-    def __add__(self, other):
-        return Hex(hex(self.num + other.num))
-
-    def __sub__(self, other):
-        return Hex(hex(self.num - other.num))
-
-    def __str__(self):
-        return self.hex_str
-
-    @property
-    def s(self) -> str:
-        return self.hex_str.replace('0x', '')
-
-
-# 将 bytecode 转化为 opcode 并编号
-def to_opcode(bytecode: str, base=Hex('0')):
-    opcode = ''
-    base = base.num
-    i = 0
-    while i < len(bytecode):
-        inc = 2
-        start = end = ''  # 用于给 JUMPDEST ,JUMP(I) 做特殊标记
-        curr = int(bytecode[i:i + 2], 16)  # 当前指令的 10 进制表示
-        if int('60', 16) <= curr <= int('7E', 16):  # 当为 PUSH 时
-            inc += (curr - int('60', 16) + 1) * 2
-        if curr == int('5b', 16):  # 当为 JUMPDEST 时
-            start = '-----------------------\n'
-        if curr == int('56', 16) or curr == int('57', 16):  # 当为 JUMP(I)
-            end = '<---'
-        op = EvmBytecode(bytecode[i:i + inc]).disassemble().as_string
-        # opcode += '{}[{}] [{}] {}{}\n'.format(start, hex(i // 2 + base), hex(i // 2), op, end)
-        opcode += '{}\n'.format(op)
-        i += inc
-    return opcode
+from utils import Hex, to_opcode
 
 # 处理划分出的功能块
-
 class BasicPart:
     def __init__(self, start=0, end=0, bytecode='', base=0, create_mode=0):
         if create_mode == 0:
@@ -229,9 +182,9 @@ class BytecodeAnalysis:
                "log: {}-{} {}\n".format(self.log.start, self.log.end, self.log.bytecode)
 
 
-# 用于生成 push 代码, code 为要写入的内容，length 为 push 的字节长度, 其有两种模式
-# 当 length 不为 0 时, 则 length 为 code 的长度
-# 当 length 为 0 时, 则使用刚好能容下 code 的 push
+# 以操作数(code)为输入, 生成合乎长度(length)的操作码与操作数
+# 当 length 不为 0 时, 则操作数为 length 字节长度, 多余的补零
+# 当 length 为 0 时, 则操作数为刚好能容下 code 的字节长度, 奇数长度补一个零
 def push_generator(code: str, length=Hex('0')) -> str:
     code_length = len(code)
     if length.num == 0:
@@ -273,7 +226,14 @@ def construct_selector(bytecode: str, offset=Hex('0')) -> str:
 
     return res
 
-# 蹦床立刻替换, 补丁逐步累计
+# 给合约加上初始化代码
+def add_constructor(bytecode: str) -> str:
+    template = ['608060405234801561001057600080fd5b50', '8061001f6000396000f300']  # constructor 的模板
+    # codecopy 的 length 参数的 push 操作码
+    length = push_generator(hex(len(bytecode) // 2).replace('0x', ''))
+    return template[0] + length + template[1] + bytecode
+
+# 合并两个合约
 def combine_bytecode(codeA: BytecodeAnalysis, codeB: BytecodeAnalysis) -> BytecodeAnalysis:
     patch = ''
     # 第一类补丁, 用于修正函数入口
@@ -286,7 +246,7 @@ def combine_bytecode(codeA: BytecodeAnalysis, codeB: BytecodeAnalysis) -> Byteco
     # 安装蹦床与记录补丁
     codeA.funs_selector.replace(Hex('0'), codeA.funs_selector.length, trampoline_t)
     patch += patch_t
-    patch_target = patch_base + Hex(len(patch)//2)
+    patch_target = patch_base + Hex(len(patch) // 2)
 
     # 第二类补丁, 用于修正 codeB.funs_imp 中所有的 JUMP ⑴ 找到 JUMP(I) 记录位置, 构建所有指令位置 ⑵ 比较指令位置, 选择合适的替换指令 ⑶ length 可得, content 可得需要加上原来被替换的地方, 回来位置可得 JUMP
     bytecode = codeB.funs_imp.bytecode
@@ -302,7 +262,7 @@ def combine_bytecode(codeA: BytecodeAnalysis, codeB: BytecodeAnalysis) -> Byteco
             inc += (curr - int('60', 16) + 1) * 2
         if curr == int('56', 16) or curr == int('57', 16):  # 当为 JUMP(I) 时
             jump_collections.append(counter)
-        ops[counter] = (Hex(i//2), bytecode[i:i + inc])  # 记录: 第几行 -> 字节位置, 字节码
+        ops[counter] = (Hex(i // 2), bytecode[i:i + inc])  # 记录: 第几行 -> 字节位置, 字节码
         i += inc
         counter += 1
 
@@ -330,14 +290,13 @@ def combine_bytecode(codeA: BytecodeAnalysis, codeB: BytecodeAnalysis) -> Byteco
                     i -= 1
             else:
                 print("无法合并, 没有足够的替换空间")
-                return ''
+                return BytecodeAnalysis('')
 
     res = codeA[1].bytecode + codeA[2].bytecode + codeA[3].bytecode + codeA[4].bytecode + \
           codeB[4].bytecode + patch
 
-    # TODO: 返回 BytecodeAnalysis 结构
-    return res
-
+    res = add_constructor(res)
+    return BytecodeAnalysis(res)
 
 
 add_bytecode = '6080604052348015600f57600080fd5b50609c8061001e6000396000f300608060405260043610603e5763ffffffff7c0100000000000000000000000000000000000000000000000000000000600035041663a836572881146043575b600080fd5b348015604e57600080fd5b506058600435606a565b60408051918252519081900360200190f35b600101905600a165627a7a723058201b5930ac885210ff114b55848f959850c81886c515ec221eb475490f85e319a50029'
@@ -346,12 +305,4 @@ double_bytecode = '6080604052348015600f57600080fd5b50609c8061001e6000396000f3006
 add_analysis = BytecodeAnalysis(add_bytecode)
 double_analysis = BytecodeAnalysis(double_bytecode)
 
-# JUMP(I) 目标对应 PUSH 地址 -> 跳转的目标
-add_target = {'9': '3e', '3b': '43', '47': '4e', '50': '58', '55': '6a'}
-double_target = {'9': '3e', '3b': '43', '47': '4e', '50': '58', '55': '6a'}
-
-# combined = combine_bytecode1(add_analysis, double_analysis, add_target, double_target)
-# code = to_opcode(combined)
-
-print(combine_bytecode(add_analysis, double_analysis))
-# print(to_opcode('608060405234801561001057600080fd5b50610147806100206000396000f300608060405260043610610041576000357c0100000000000000000000000000000000000000000000000000000000900463ffffffff168063771602f714610046575b600080fd5b34801561005257600080fd5b5061007b6004803603810190808035906020019092919080359060200190929190505050610091565b6040518082815260200191505060405180910390f35b6000808284019050838110151515610111576040517f08c379a000000000000000000000000000000000000000000000000000000000815260040180806020018281038252601b8152602001807f536166654d6174683a206164646974696f6e206f766572666c6f77000000000081525060200191505060405180910390fd5b80915050929150505600a165627a7a72305820c43ba7c72b8d9c1d76ac9137601f4f56bb18008ccbab13afcdd5d56db2da4b6a0029'))
+print(combine_bytecode(add_analysis, double_analysis).bytecode)
