@@ -2,7 +2,6 @@ from evmdasm import EvmBytecode
 import math
 import queue
 
-
 # 用于处理 16 进制
 class Hex:
     def __init__(self, num):
@@ -50,6 +49,7 @@ def to_opcode(bytecode: str, base=Hex('0')):
         i += inc
     return opcode
 
+# 处理划分出的功能块
 
 class BasicPart:
     def __init__(self, start=0, end=0, bytecode='', base=0, create_mode=0):
@@ -73,6 +73,7 @@ class BasicPart:
         else:
             raise TypeError
 
+    # 以绝对字节位置索引操作码以及操作数
     def __getitem__(self, item):
         # 获得字符串对应下标
         if type(item) == str:
@@ -90,7 +91,7 @@ class BasicPart:
         op = EvmBytecode(self.bytecode[i:i + inc]).disassemble().as_string
         return '[{}] [{}] {}'.format(hex(self.base.num + i // 2), hex(i // 2), op)
 
-    # 以左闭右开的方式十分容易选择
+    # 以相对字节位置替换一句操作码
     def __setitem__(self, key, value: str):
         if type(key) == Hex:
             i = int(key.hex_str, 16) * 2
@@ -114,6 +115,7 @@ class BasicPart:
     def opcode(self):
         return to_opcode(self.bytecode, self.base)
 
+    # 以相对字节位置替换一段操作码
     def replace(self, start: Hex, length: Hex, content: str):
         end = start + length
         self.bytecode = self.bytecode[0:start.num * 2] + content + self.bytecode[end.num * 2::]
@@ -134,12 +136,13 @@ class BytecodeAnalysis:
         # 初始化
         self.divider()
 
+    # 将功能块按顺序从0开始排序，使用排序下标索引功能块
     def __getitem__(self, item: int):
         parts = [self.constructor, self.fallback_selector, self.funs_selector, self.fallback_imp, self.funs_imp,
                  self.log]
         return parts[item]
 
-    # 将字节码进行拆分
+    # 将字节码拆分为功能块
     def divider(self):
         constructor = fallback_selector = funs_selector = fallback_imp = funs_imp = log = [0, 0]
         bc = self.bytecode
@@ -187,6 +190,7 @@ class BytecodeAnalysis:
         self.log = BasicPart(log[0], log[1], bc, base)
         self.middle = BasicPart(fallback_selector[0], funs_imp[1], bc, 0)
 
+    # 以绝对字节位置替换一句操作码
     def __setitem__(self, key: Hex, value):
         base_all = [self.fallback_selector.base, self.funs_selector.base, self.fallback_imp.base, self.funs_imp.base,
                     self.log.base]
@@ -198,6 +202,7 @@ class BytecodeAnalysis:
                 curr[key - curr.base] = value
                 break
 
+    # TODO：等会弃用
     def analysis_target(self):
         bytecode = self.middle.bytecode
         i = 0
@@ -210,6 +215,7 @@ class BytecodeAnalysis:
             pre = bytecode[i:i + inc]  # 上一次指令
             i += inc
 
+    # 打印划分好的功能块
     def __str__(self):
         return "constructor: {}-{} {}\n".format(self.constructor.start, self.constructor.end,
                                                 self.constructor.bytecode) + \
@@ -244,24 +250,6 @@ def trampoline_patch_generator(patch_target: Hex, trampoline_length: Hex, patch_
     patch = '5b' + patch_content + push_generator(back_target) + '56'
     return trampoline, patch
 
-
-# 合并字节码 ⑴ 选用第一个合约的回调函数 ⑵ 加上固定的偏置
-def combine_bytecode1(codeA: BytecodeAnalysis, codeB: BytecodeAnalysis, targetA: dict, targetB: dict) -> str:
-    # 计算偏置
-    offset1 = codeB.funs_selector.length
-    offset2 = codeA.fallback_imp.length - codeB.fallback_imp.length + codeA.funs_selector.length + codeA.funs_imp.length
-    # 修改字节码
-    for key, value in targetA.items():
-        codeA[Hex(key)] = '60' + (Hex(value) + offset1).s
-    for key, value in targetB.items():
-        codeB[Hex(key)] = '60' + (Hex(value) + offset2).s
-    codeB[Hex('39')] = '80'
-    # 合并字节码: 函数选择子 -> 函数实现
-    res = codeA[1].bytecode + codeA[2].bytecode + codeB[2].bytecode + \
-          codeA[3].bytecode + codeA[4].bytecode + codeB[4].bytecode
-
-    return res
-
 def construct_selector(bytecode: str, offset=Hex('0')) -> str:
     push_queue = queue.Queue()
     i = 0
@@ -286,7 +274,7 @@ def construct_selector(bytecode: str, offset=Hex('0')) -> str:
     return res
 
 # 蹦床立刻替换, 补丁逐步累计
-def combine_bytecode2(codeA: BytecodeAnalysis, codeB: BytecodeAnalysis) -> str:
+def combine_bytecode(codeA: BytecodeAnalysis, codeB: BytecodeAnalysis) -> BytecodeAnalysis:
     patch = ''
     # 第一类补丁, 用于修正函数入口
     # 修正第二个函数的, 利用相对于 funs_imp 的差值不变, - codeB.funs_imp.base 在求差值
@@ -347,6 +335,7 @@ def combine_bytecode2(codeA: BytecodeAnalysis, codeB: BytecodeAnalysis) -> str:
     res = codeA[1].bytecode + codeA[2].bytecode + codeA[3].bytecode + codeA[4].bytecode + \
           codeB[4].bytecode + patch
 
+    # TODO: 返回 BytecodeAnalysis 结构
     return res
 
 
@@ -364,5 +353,5 @@ double_target = {'9': '3e', '3b': '43', '47': '4e', '50': '58', '55': '6a'}
 # combined = combine_bytecode1(add_analysis, double_analysis, add_target, double_target)
 # code = to_opcode(combined)
 
-print(combine_bytecode2(add_analysis, double_analysis))
+print(combine_bytecode(add_analysis, double_analysis))
 # print(to_opcode('608060405234801561001057600080fd5b50610147806100206000396000f300608060405260043610610041576000357c0100000000000000000000000000000000000000000000000000000000900463ffffffff168063771602f714610046575b600080fd5b34801561005257600080fd5b5061007b6004803603810190808035906020019092919080359060200190929190505050610091565b6040518082815260200191505060405180910390f35b6000808284019050838110151515610111576040517f08c379a000000000000000000000000000000000000000000000000000000000815260040180806020018281038252601b8152602001807f536166654d6174683a206164646974696f6e206f766572666c6f77000000000081525060200191505060405180910390fd5b80915050929150505600a165627a7a72305820c43ba7c72b8d9c1d76ac9137601f4f56bb18008ccbab13afcdd5d56db2da4b6a0029'))
