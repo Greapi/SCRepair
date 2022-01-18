@@ -43,3 +43,4 @@ def index_opcode(file: str):
 
 if __name__ == "__main__":
     index_opcode('c.txt')
+    print("ok")
