@@ -7,13 +7,13 @@ from utils import Hex, to_opcode
 class BasicPart:
     def __init__(self, start=0, end=0, bytecode='', base=0, create_mode=0):
         if create_mode == 0:
-            # 相较于第二个 6080 的偏移
+            # 该功能块的绝对偏移的基址
             self.base = Hex(base)
-            # 全局起始与终了
+            # 该功能块相较于合约字节码的偏移
             self.start = Hex(start // 2)
             self.end = Hex(end // 2)
             self.length = Hex((end - start) // 2)
-            # 源代码与当前代码, 后面相较于第二个 6080 的偏移
+            # 源代码与当前功能块的代码
             self.source_bytecode = bytecode
             self.bytecode = bytecode[start:end]
         elif create_mode == 1:
@@ -39,7 +39,7 @@ class BasicPart:
         curr = int(self.bytecode[i:i + 2], 16)
         # 处理当为 PUSH 时的情况
         inc = 2
-        if int('60', 16) <= curr <= int('7E', 16):
+        if int('60', 16) <= curr <= int('7F', 16):
             inc += (curr - int('60', 16) + 1) * 2
         op = EvmBytecode(self.bytecode[i:i + inc]).disassemble().as_string
         return '[{}] [{}] {}'.format(hex(self.base.num + i // 2), hex(i // 2), op)
@@ -54,7 +54,7 @@ class BasicPart:
             raise TypeError
         curr = int(self.bytecode[i:i + 2], 16)  # 获得字节码
         inc = 2
-        if int('60', 16) <= curr <= int('7E', 16):  # 处理 PUSH 情况
+        if int('60', 16) <= curr <= int('7F', 16):  # 处理 PUSH 情况
             inc += (curr - int('60', 16) + 1) * 2
         op = EvmBytecode(self.bytecode[i:i + inc]).disassemble().as_string
         self.bytecode = self.bytecode[0:i] + value + self.bytecode[i + inc::]
@@ -89,6 +89,11 @@ class BytecodeAnalysis:
         # 初始化
         self.divider()
 
+    # 迭代划分后的结果
+    def __iter__(self):
+        return iter([self.constructor, self.fallback_selector, self.funs_selector, self.fallback_imp, self.funs_imp,
+                     self.log])
+
     # 将功能块按顺序从0开始排序，使用排序下标索引功能块
     def __getitem__(self, item: int):
         parts = [self.constructor, self.fallback_selector, self.funs_selector, self.fallback_imp, self.funs_imp,
@@ -97,38 +102,67 @@ class BytecodeAnalysis:
 
     # 将字节码拆分为功能块
     def divider(self):
+        def match(bytecode: str) -> bool:
+            j = 0
+            ops = []
+            while j < len(bytecode):
+                _inc = 2
+                ops.append(bytecode[j:j + 2])
+                _op = int(bytecode[j:j + 2], 16)
+                if int('60', 16) <= _op <= int('7F', 16):
+                    _inc += (_op - int('60', 16) + 1) * 2
+                j += _inc
+            if len(ops) >= 2 and not (int('60', 16) <= int(ops[-2], 16) <= int('7F', 16)):  # 倒数第二个必须是 PUSH
+                return False
+            ops = ops[0:-2] + ops[-1::]  # 去除倒数第二个
+            return ops == ['63', '14', '57'] or ops == ['63', '81', '14', '57']
+
         constructor = fallback_selector = funs_selector = fallback_imp = funs_imp = log = [0, 0]
         bc = self.bytecode
         i, j = 0, 0
         part = 0
         while j < len(self.bytecode):
             inc = 2
-            if bc[j:j + 2] == '00' and part == 0:  # STOP
-                constructor = [i, j + 2]
-                i = j + 2
-                part += 1
-            elif bc[j - 2:j + 2] == '0416' and part == 1:  # DIV |AND|
-                fallback_selector = [i, j + 2]
-                i = j + 2
-                part += 1
-            elif (bc[j:j + 4] == '575b' or bc[j:j + 4] == '565b') and part == 2:  # |JUMPI| JUMPDEST 或者 |JUMP| JUMPDEST
-                funs_selector = [i, j + 2]
-                i = j + 2
-                part += 1
-            elif bc[j:j + 2] == 'fd' and part == 3:  # |REVERT| #TODO fallback 函数的终止条件
-                fallback_imp = [i, j + 2]
-                i = j + 2
-                part += 1
-            elif bc[j:j + 2] == '00' and part == 4:  # |STOP|
-                funs_imp = [i, j + 2]
-                i = j + 2
-                part += 1
-                log = [i, len(bc)]
+            # 拆分出 constructor
+            if part == 0:
+                if bc[j:j + 2] == '00' or bc[j:j + 2] == 'fe':  # |STOP(0x00)| 或者 |0xfe|
+                    constructor = [i, j + 2]
+                    i = j + 2
+                    part += 1
+            # 拆分出 fallback selector
+            if part == 1:
+                if match(bc[j + 2:j + 22]) or match(bc[j + 2:j + 24]):  # |PUSH4 EQ PUSH? JUMPI| 或者 |PUSH4 DUP2 EQ PUSH? JUMPI|
+                    fallback_selector = [i, j + 2]
+                    i = j + 2
+                    part += 1
+            # 拆分出 fun selector
+            if part == 2:
+                if bc[j:j + 4] == '575b' or bc[j:j + 4] == '565b':  # |JUMPI| JUMPDEST 或者 |JUMP| JUMPDEST
+                    funs_selector = [i, j + 2]
+                    i = j + 2
+                    part += 1
+            # 拆分出 fallback impl
+            if part == 3:
+                if bc[j:j + 2] == 'fd':  # |REVERT|
+                    fallback_imp = [i, j + 2]
+                    i = j + 2
+                    part += 1
+            # 拆分出 funs impl 和 log
+            if part == 4:
+                if bc[j:j + 2] == '00' or bc[j:j + 2] == 'fe':  # |STOP(0x00)| 或者 |0xfe|
+                    funs_imp = [i, j + 2]
+                    i = j + 2
+                    part += 1
+                    log = [i, len(bc)]
 
             op = int(bc[j:j + 2], 16)
-            if int('60', 16) <= op <= int('7E', 16):
+            if int('60', 16) <= op <= int('7F', 16):
                 inc += (op - int('60', 16) + 1) * 2
             j += inc
+
+        if constructor == [0, 0] or fallback_selector == [0, 0] or funs_selector == [0, 0] or \
+                fallback_imp == [0, 0] or funs_imp == [0, 0]:
+            raise TypeError
 
         self.constructor = BasicPart(constructor[0], constructor[1], self.bytecode, 0)
         base = 0
@@ -163,7 +197,7 @@ class BytecodeAnalysis:
         while i < len(bytecode):
             inc = 2
             curr = bytecode[i:i + 2]  # 当前指令
-            if int('60', 16) <= int(curr, 16) <= int('7E', 16):
+            if int('60', 16) <= int(curr, 16) <= int('7F', 16):
                 inc += (int(curr, 16) - int('60', 16) + 1) * 2
             pre = bytecode[i:i + inc]  # 上一次指令
             i += inc
@@ -203,15 +237,16 @@ def trampoline_patch_generator(patch_target: Hex, trampoline_length: Hex, patch_
     patch = '5b' + patch_content + push_generator(back_target) + '56'
     return trampoline, patch
 
+
 def construct_selector(bytecode: str, offset=Hex('0')) -> str:
     push_queue = queue.Queue()
     i = 0
     while i < len(bytecode):
         inc = 2
         curr = bytecode[i:i + 2]  # 当前指令
-        if int('60', 16) <= int(curr, 16) <= int('7E', 16):
+        if int('60', 16) <= int(curr, 16) <= int('7F', 16):
             inc += (int(curr, 16) - int('60', 16) + 1) * 2
-            push_queue.put(bytecode[i:i+inc])
+            push_queue.put(bytecode[i:i + inc])
         i += inc
     if push_queue.qsize() % 2 != 0:
         print("队列非双数")
@@ -226,12 +261,14 @@ def construct_selector(bytecode: str, offset=Hex('0')) -> str:
 
     return res
 
+
 # 给合约加上初始化代码
 def add_constructor(bytecode: str) -> str:
     template = ['608060405234801561001057600080fd5b50', '8061001f6000396000f300']  # constructor 的模板
     # codecopy 的 length 参数的 push 操作码
     length = push_generator(hex(len(bytecode) // 2).replace('0x', ''))
     return template[0] + length + template[1] + bytecode
+
 
 # 合并两个合约
 def combine_bytecode(codeA: BytecodeAnalysis, codeB: BytecodeAnalysis) -> BytecodeAnalysis:
@@ -258,7 +295,7 @@ def combine_bytecode(codeA: BytecodeAnalysis, codeB: BytecodeAnalysis) -> Byteco
     while i < len(bytecode):
         inc = 2
         curr = int(bytecode[i:i + 2], 16)  # 当前指令的 10 进制表示
-        if int('60', 16) <= curr <= int('7E', 16):  # 当为 PUSH 时
+        if int('60', 16) <= curr <= int('7F', 16):  # 当为 PUSH 时
             inc += (curr - int('60', 16) + 1) * 2
         if curr == int('56', 16) or curr == int('57', 16):  # 当为 JUMP(I) 时
             jump_collections.append(counter)
@@ -266,7 +303,7 @@ def combine_bytecode(codeA: BytecodeAnalysis, codeB: BytecodeAnalysis) -> Byteco
         i += inc
         counter += 1
 
-    min_length = math.ceil(len(patch_target.s) / 2) + 3   # 蹦床最小所需直接长度字节长度, 比如跳转位置为 123, 则 min_length=ceil(3/2)+3=5
+    min_length = math.ceil(len(patch_target.s) / 2) + 3  # 蹦床最小所需直接长度字节长度, 比如跳转位置为 123, 则 min_length=ceil(3/2)+3=5
     for line in jump_collections:
         i = line - 1  # JUMP 从上一行开始检测合适的插入位置
         while True:
@@ -277,7 +314,8 @@ def combine_bytecode(codeA: BytecodeAnalysis, codeB: BytecodeAnalysis) -> Byteco
                     patch_target = patch_base + Hex(len(patch) // 2)
                     # 跳转内容计算
                     offset = codeA.middle.length - codeB.funs_imp.base
-                    patch_content = bytecode[ops[i][0].num * 2:ops[line][0].num * 2] + push_generator(offset.s) + '01'  # 原来的 + 新的
+                    patch_content = bytecode[ops[i][0].num * 2:ops[line][0].num * 2] + push_generator(
+                        offset.s) + '01'  # 原来的 + 新的
                     # 回来目标计算
                     back_target = (ops[line][0] - Hex('1') + codeA.middle.length).s  # 向上移动到 JUMPDEST
                     trampoline_t, patch_t = trampoline_patch_generator(patch_target, curr_length,
@@ -301,8 +339,14 @@ def combine_bytecode(codeA: BytecodeAnalysis, codeB: BytecodeAnalysis) -> Byteco
 
 add_bytecode = '6080604052348015600f57600080fd5b50609c8061001e6000396000f300608060405260043610603e5763ffffffff7c0100000000000000000000000000000000000000000000000000000000600035041663a836572881146043575b600080fd5b348015604e57600080fd5b506058600435606a565b60408051918252519081900360200190f35b600101905600a165627a7a723058201b5930ac885210ff114b55848f959850c81886c515ec221eb475490f85e319a50029'
 double_bytecode = '6080604052348015600f57600080fd5b50609c8061001e6000396000f300608060405260043610603e5763ffffffff7c0100000000000000000000000000000000000000000000000000000000600035041663eee9720681146043575b600080fd5b348015604e57600080fd5b506058600435606a565b60408051918252519081900360200190f35b600202905600a165627a7a72305820f3a6ecd64c261907682d5ce13a40341199a16032194121592a8017e6692158de0029'
+hello_bytecode = '608060405234801561001057600080fd5b5061017c806100206000396000f3fe608060405234801561001057600080fd5b506004361061002b5760003560e01c806319ff1d2114610030575b600080fd5b61003861004e565b6040516100459190610124565b60405180910390f35b60606040518060400160405280600b81526020017f68656c6c6f20776f726c64000000000000000000000000000000000000000000815250905090565b600081519050919050565b600082825260208201905092915050565b60005b838110156100c55780820151818401526020810190506100aa565b838111156100d4576000848401525b50505050565b6000601f19601f8301169050919050565b60006100f68261008b565b6101008185610096565b93506101108185602086016100a7565b610119816100da565b840191505092915050565b6000602082019050818103600083015261013e81846100eb565b90509291505056fea2646970667358221220dac56691e4e7399d1cd082465dc09cff423a7ed5f52c84162e8ff8859bc6764e64736f6c634300080b0033'
 
 add_analysis = BytecodeAnalysis(add_bytecode)
 double_analysis = BytecodeAnalysis(double_bytecode)
+hello_analysis = BytecodeAnalysis(hello_bytecode)
 
-print(combine_bytecode(add_analysis, double_analysis).bytecode)
+# for part in hello_analysis:  # 检验划分问题
+#     print(part.bytecode)
+
+# print(combine_bytecode(add_analysis, double_analysis).bytecode)
+print(to_opcode('608060405260043610603e5763ffffffff7c0100000000000000000000000000000000000000000000000000000000600035041667000000000000009f565b600080fd5b348015604e57600080fd5b506058600435606a565b60408051918252519081900360200190f35b6001019056005b3460b7565b57600080fd5b5060586100c2565b565b60408051918252519081900360200190f35b60ce565b56005b63a836572881146043578063eee9720614607157603e565b8015604e602e016076565b600435606a602e016084565b60020290602e01609c56'))
