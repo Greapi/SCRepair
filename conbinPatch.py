@@ -238,7 +238,7 @@ def trampoline_patch_generator(patch_target: Hex, trampoline_length: Hex, patch_
     return trampoline, patch
 
 
-def construct_selector(bytecode: str, offset=Hex('0')) -> str:
+def selector_generator(bytecode: str, offset=Hex('0')) -> str:
     push_queue = queue.Queue()
     i = 0
     while i < len(bytecode):
@@ -275,8 +275,8 @@ def combine_bytecode(codeA: BytecodeAnalysis, codeB: BytecodeAnalysis) -> Byteco
     patch = ''
     # 第一类补丁, 用于修正函数入口
     # 修正第二个函数的, 利用相对于 funs_imp 的差值不变, - codeB.funs_imp.base 在求差值
-    patch_content = codeA[2].bytecode + construct_selector(codeB[2].bytecode, codeA.middle.length - codeB.funs_imp.base)
-    # TODO 先不添加 log 部分, 之后补上
+    # TODO：将 offset 分出为一个单独变量，因为这样更方便理解
+    patch_content = codeA[2].bytecode + selector_generator(codeB[2].bytecode, codeA.middle.length - codeB.funs_imp.base)
     patch_base = codeA.middle.length + codeB.funs_imp.length
     trampoline_t, patch_t = trampoline_patch_generator(patch_base, codeA.funs_selector.length,
                                                        patch_content, codeA[3].base.s)
@@ -327,6 +327,7 @@ def combine_bytecode(codeA: BytecodeAnalysis, codeB: BytecodeAnalysis) -> Byteco
                 else:
                     i -= 1
             else:
+                # TODO 把空间不够的那一部份字节码提出来并转为操作码
                 print("无法合并, 没有足够的替换空间")
                 return BytecodeAnalysis('')
 
@@ -334,6 +335,7 @@ def combine_bytecode(codeA: BytecodeAnalysis, codeB: BytecodeAnalysis) -> Byteco
           codeB[4].bytecode + patch
 
     res = add_constructor(res)
+    # TODO 更新一个 codeA 的 BytecodeAnalysis，而不是创建一个新的
     return BytecodeAnalysis(res)
 
 
