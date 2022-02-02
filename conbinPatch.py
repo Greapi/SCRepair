@@ -1,123 +1,311 @@
 from evmdasm import EvmBytecode
 import math
-import queue
 from utils import Hex, to_opcode
+import opcodes as op
 
-# 处理划分出的功能块
-class BasicPart:
-    def __init__(self, start=0, end=0, bytecode='', base=0, create_mode=0):
-        if create_mode == 0:
-            # 该功能块的绝对偏移的基址
-            self.base = Hex(base)
-            # 该功能块相较于合约字节码的偏移
-            self.start = Hex(start // 2)
-            self.end = Hex(end // 2)
-            self.length = Hex((end - start) // 2)
-            # 源代码与当前功能块的代码
-            self.source_bytecode = bytecode
-            self.bytecode = bytecode[start:end]
-        elif create_mode == 1:
-            self.base = Hex('0')
-            self.start = Hex('0')
-            self.end = Hex('0')
-            self.length = Hex(len(bytecode) // 2)
-            self.source_bytecode = bytecode
-            self.bytecode = bytecode
-        else:
-            raise TypeError
 
-    # 以绝对字节位置索引操作码以及操作数
-    def __getitem__(self, item):
-        # 获得字符串对应下标
-        if type(item) == str:
-            i = int(item, 16) * 2
-        elif type(item) == Hex:
-            i = item.num * 2
-        else:
-            raise TypeError
-        # 获得当前操作字节码十进制表示
-        curr = int(self.bytecode[i:i + 2], 16)
-        # 处理当为 PUSH 时的情况
+def format_bytecode(bytecode) -> list:
+    i = 0
+    res = list()  # (行号) - 字节位置 - 操作码 - 操作数
+    while i < len(bytecode):
         inc = 2
+        curr_hex = bytecode[i:i + 2]
+        curr = int(curr_hex, 16)  # 当前指令的 10 进制表示
+        if int('60', 16) <= curr <= int('7F', 16):  # 当为 PUSH 时
+            inc += (curr - int('60', 16) + 1) * 2
+            res.append((Hex(i // 2), curr_hex, bytecode[i + 2:i + inc]))
+        else:
+            res.append((Hex(i // 2), curr_hex))
+        i += inc
+    return res
+
+
+# 格式化字节码
+class FBytecode:
+    def __init__(self, bytecode=''):
+        self.bytecode = bytecode
+        self.length = Hex(len(bytecode) // 2)
+        self.formatted_bytecode = format_bytecode(self.bytecode)
+
+    def __iter__(self):
+        return iter(self.formatted_bytecode)
+
+    def update(self, bytecode):
+        self.bytecode = bytecode
+        self.length = Hex(len(bytecode) // 2)
+        self.formatted_bytecode = format_bytecode(self.bytecode)
+
+    def _blength_of_line(self, line_num: int) -> Hex:
+        default = 1
+        curr = int(self.formatted_bytecode[line_num][1], 16)
         if int('60', 16) <= curr <= int('7F', 16):
-            inc += (curr - int('60', 16) + 1) * 2
-        op = EvmBytecode(self.bytecode[i:i + inc]).disassemble().as_string
-        return '[{}] [{}] {}'.format(hex(self.base.num + i // 2), hex(i // 2), op)
+            default += curr - int('60', 16) + 1
+        return Hex(default)
 
-    # 以相对字节位置替换一句操作码
-    def __setitem__(self, key, value: str):
-        if type(key) == Hex:
-            i = int(key.hex_str, 16) * 2
-        elif type(key) == str:
-            i = int(key, 16) * 2  # 计算下标
-        else:
+    def blength_by_line(self, start: int, end: int) -> Hex:
+        before_end = self.formatted_bytecode[end][0] - self.formatted_bytecode[start][0]
+        return before_end + self._blength_of_line(end)
+
+    def __getitem__(self, item: int):
+        return self.formatted_bytecode
+
+    def __str__(self):
+        s = ''
+        for i, line in enumerate(self.formatted_bytecode):
+            s += '{} {} {}\n'.format(i, line[0],
+                                     EvmBytecode(line[1] + line[2]).disassemble().as_string)  # 行号 - 字节位置 - 操作数 - 操作码
+        return s
+
+    def print_by_line(self, start: int, end: int):
+        s = ''
+        for i in range(start, end + 1):
+            line = self.formatted_bytecode[i]
+            s += '{} {} {}\n'.format(i, line[0],
+                                     EvmBytecode(line[1] + line[2]).disassemble().as_string)  # 行号 - 字节位置 - 操作数 - 操作码
+        print(s)
+
+    def replace_by_line(self, start: int, end: int, value):
+        start_h = self.formatted_bytecode[start][0]
+        end_h = self.formatted_bytecode[end][0] + self._blength_of_line(end)
+        new_bytecode = self.bytecode[0:start_h.num * 2] + value.bytecode + self.bytecode[end_h.num * 2::]
+        self.update(new_bytecode)
+
+    def get_by_line(self, start: int, end: int):
+        start_h = self.formatted_bytecode[start][0]
+        end_h = self.formatted_bytecode[end][0] + self._blength_of_line(end)
+        bytecode = self.bytecode[start_h.num:end_h.num]
+        return FBytecode(bytecode)
+
+    def __iadd__(self, other):
+        bytecode = self.bytecode + other.bytecode
+        self.update(bytecode)
+        return self
+
+    def __add__(self, other):
+        bytecode = self.bytecode + other.bytecode
+        return FBytecode(bytecode)
+
+
+# 功能块
+class FunBlock(FBytecode):
+    def __init__(self, bytecode='', base=Hex('0')):
+        super().__init__(bytecode)
+        self.base = base
+
+    def update_funBlock(self, bytecode: str, base: Hex):
+        super(FunBlock, self).update(bytecode)
+        self.base = base
+
+
+class Constructor(FBytecode):
+    pass
+
+
+class SelectorGenerator(FunBlock):
+    pass
+
+
+class SelectorTrampoline(FunBlock):
+    def update_target(self, target: Hex):
+        new_push = push_generator(target, self.length - Hex('2'))
+        new_bytecode = new_push + op.jump
+        self.update_funBlock(new_bytecode, Hex('0'))
+
+
+class Selector(FunBlock):
+    # 提取出签名
+    def _format_selector(self) -> list:
+        formatted_selector = []
+        temp = []
+        i = 0
+        count = 0
+        while i < len(self.bytecode):
+            inc = 2
+            curr_hex = self.bytecode[i:i + 2]
+            curr = int(curr_hex, 16)  # 当前指令的 10 进制表示
+            if int('60', 16) <= curr <= int('7F', 16):  # 当为 PUSH 时
+                inc += (curr - int('60', 16) + 1) * 2
+                if count % 2 == 0:  # 双数
+                    if curr_hex != op.push4:
+                        print("Selector无效签名")
+                        raise TypeError
+                    temp = [curr_hex]
+                    count += 1
+                else:  # 单数
+                    temp.append(curr_hex)
+                    formatted_selector.append(temp)
+                    temp = []
+                    count += 1
+            i += inc
+        if count % 2 != 0:  # 签名和目标必须成对存在
+            print("Selector跳转缺失目标")
             raise TypeError
-        curr = int(self.bytecode[i:i + 2], 16)  # 获得字节码
-        inc = 2
-        if int('60', 16) <= curr <= int('7F', 16):  # 处理 PUSH 情况
-            inc += (curr - int('60', 16) + 1) * 2
-        op = EvmBytecode(self.bytecode[i:i + inc]).disassemble().as_string
-        self.bytecode = self.bytecode[0:i] + value + self.bytecode[i + inc::]
-        op_c = EvmBytecode(value).disassemble().as_string
-        print('[{}] [{}] {} --> {}\n'.format(hex(self.base.num + i // 2), hex(i // 2), op, op_c))
+        return formatted_selector
 
-    def __len__(self):
-        return self.length.num
+    def __init__(self, bytecode='', base=Hex('0')):
+        super().__init__(bytecode, base)
+        self.formatted_selector = self._format_selector()
+
+    # 会引起原来的 bytecode 发生内容与长度的改变
+    def update_offset(self, offset: Hex):
+        bytecode = ''
+        for i in range(len(self.formatted_selector)):
+            sign = self.formatted_selector[i][0]
+            target = self.formatted_selector[i][1]
+            # 给加上移动的偏移
+            new_target_push = push_generator(target + offset)
+            bytecode += op.dup1 + op.push4 + sign + op.eq + \
+                        new_target_push + op.jumpi
+            self.formatted_selector[i][1] = new_target_push[2::]
+        self.update(bytecode)
+
+
+class FallbackImpl(FunBlock):
+    pass
+
+
+class FunsImpl(FunBlock):
+    pass
+
+
+class SelectorRevise(FunBlock):
+    pass
+
+
+class CBOR:
+    def __init__(self, bytecode='', base=Hex('0')):
+        self.bytecode = bytecode
+        self.base = base
 
     @property
-    def opcode(self):
-        return to_opcode(self.bytecode, self.base)
-
-    # 以相对字节位置替换一段操作码
-    def replace(self, start: Hex, length: Hex, content: str):
-        end = start + length
-        self.bytecode = self.bytecode[0:start.num * 2] + content + self.bytecode[end.num * 2::]
+    def length(self) -> Hex:
+        return Hex(len(self.bytecode)//2)
 
 
-# 用于处理字节码
-class BytecodeAnalysis:
-    def __init__(self, bytecode: str):
-        self.bytecode = bytecode
-        self.constructor = BasicPart()  # 构造函数
-        self.fallback_selector = BasicPart()  # 回调函数选择子
-        self.funs_selector = BasicPart()  # 函数选择子
-        self.fallback_imp = BasicPart()  # 回调函数实现
-        self.funs_imp = BasicPart()  # 函数实现
-        self.log = BasicPart()  # 日志
-        self.middle = BasicPart()  # 中间部分
+class Middle(FBytecode):
+    pass
 
-        # 初始化
-        self.divider()
 
-    # 迭代划分后的结果
-    def __iter__(self):
-        return iter([self.constructor, self.fallback_selector, self.funs_selector, self.fallback_imp, self.funs_imp,
-                     self.log])
+class Patch:
+    def __init__(self):
+        self.fBytecode_list = []
 
-    # 将功能块按顺序从0开始排序，使用排序下标索引功能块
-    def __getitem__(self, item: int):
-        parts = [self.constructor, self.fallback_selector, self.funs_selector, self.fallback_imp, self.funs_imp,
-                 self.log]
-        return parts[item]
+    @property
+    def length(self) -> Hex:
+        length = Hex('0')
+        for fBytecode in self.fBytecode_list:
+            length += fBytecode.length
+        return length
 
-    # 将字节码拆分为功能块
-    def divider(self):
+    @property
+    def bytecode(self) -> str:
+        s = ''
+        for fBytecode in self.fBytecode_list:
+            s += fBytecode.bytecode
+        return s
+
+    @property
+    def formatted_bytecode(self) -> list:
+        ls = list()
+        for fBytecode in self.fBytecode_list:
+            ls += fBytecode.formatted_bytecode
+        return ls
+
+    def __iadd__(self, other: FBytecode):
+        self.fBytecode_list.append(other)
+        return self
+
+    def __str__(self):
+        output = ''
+        counter = 0
+        for i, fBytecode in enumerate(self.fBytecode_list):
+            output += '--------第{}次补丁--------'.format(i)
+            for line in fBytecode.formatted_bytecode:
+                output += '{} {} {}\n'.format(counter, line[0], EvmBytecode(
+                    line[1] + line[2]).disassemble().as_string)  # 行号 - 字节位置 - 操作数 - 操作码
+                counter += 1
+        return output
+
+
+class Source:
+    def __init__(self, contract: str):
+        self.constructor = Constructor()
+        self.selector_generator = SelectorGenerator()
+        self.selector_trampoline = SelectorTrampoline()
+        self.fallback_impl = FallbackImpl()
+        self.funs_impl = FunsImpl()
+        self.selector_revise = SelectorRevise()
+        self.cbor = CBOR()
+
+    # 动态生成, 因为会不断变化
+    @property
+    def bytecode(self) -> str:
+        fun_blocks = [self.constructor, self.selector_generator, self.selector_trampoline,
+                      self.fallback_impl, self.funs_impl, self.selector_revise, self.cbor]
+        bytecode = ''
+        for fun_block in fun_blocks:
+            bytecode += fun_block.bytecode
+        return bytecode
+
+    @property
+    def middle(self) -> Middle:
+        middle_blocks = [self.selector_generator, self.selector_trampoline, self.fallback_impl, self.funs_impl]
+        bytecode = ''
+        for middle_block in middle_blocks:
+            bytecode += middle_block.bytecode
+        return Middle(bytecode)
+
+    def append_funs_impl(self, new_funs_impl: FunsImpl, patch: Patch):
+        def combine_funsImpl_patch(_funs_impl: FunsImpl, _patch: Patch) -> FBytecode:
+            return FBytecode(_funs_impl.bytecode + _patch.bytecode)
+
+        self.funs_impl += combine_funsImpl_patch(new_funs_impl, patch)  # 在 FBytecode 层面上的更新
+        self.selector_revise.base += (new_funs_impl + patch).length
+
+    def selector_revise_update(self, selector: Selector):
+        bytecode = self.selector_revise.bytecode + selector.bytecode
+        self.selector_revise.update(bytecode)
+        self.cbor.base += selector.length
+
+    def cbor_update(self, other: CBOR):
+        self.cbor.bytecode += other.bytecode
+
+    def constructor_update(self):
+        template = ['608060405234801561001057600080fd5b50', '8061001f6000396000f300']  # constructor 的模板
+        # codecopy 的 length 参数的 push 操作码
+        push_length = push_generator(self.middle.length + self.cbor.length)
+        return template[0] + push_length + template[1] + self.middle.bytecode + self.cbor.bytecode
+
+
+class Addition:
+    def __init__(self, contract: str):
+        self.bytecode = contract
+        self.constructor = Constructor()
+        self.selector_generator = SelectorGenerator()
+        self.selector = Selector()
+        self.fallback_impl = FallbackImpl()
+        self.funs_impl = FunsImpl()
+        self.cbor = CBOR()
+
+        self._divider()
+
+    def _divider(self):
         def match(bytecode: str) -> bool:
-            j = 0
+            _j = 0
             ops = []
-            while j < len(bytecode):
+            while _j < len(bytecode):
                 _inc = 2
-                ops.append(bytecode[j:j + 2])
-                _op = int(bytecode[j:j + 2], 16)
+                ops.append(bytecode[_j:_j + 2])
+                _op = int(bytecode[_j:_j + 2], 16)
                 if int('60', 16) <= _op <= int('7F', 16):
                     _inc += (_op - int('60', 16) + 1) * 2
-                j += _inc
+                _j += _inc
             if len(ops) >= 2 and not (int('60', 16) <= int(ops[-2], 16) <= int('7F', 16)):  # 倒数第二个必须是 PUSH
                 return False
             ops = ops[0:-2] + ops[-1::]  # 去除倒数第二个
             return ops == ['63', '14', '57'] or ops == ['63', '81', '14', '57']
 
-        constructor = fallback_selector = funs_selector = fallback_imp = funs_imp = log = [0, 0]
+        constructor = selector_generator = selector = fallback_impl = funs_impl = cbor = [0, 0]
         bc = self.bytecode
         i, j = 0, 0
         part = 0
@@ -131,95 +319,70 @@ class BytecodeAnalysis:
                     part += 1
             # 拆分出 fallback selector
             if part == 1:
-                if match(bc[j + 2:j + 22]) or match(bc[j + 2:j + 24]):  # |PUSH4 EQ PUSH? JUMPI| 或者 |PUSH4 DUP2 EQ PUSH? JUMPI|
-                    fallback_selector = [i, j + 2]
+                if match(bc[j + 2:j + 22]) or match(
+                        bc[j + 2:j + 24]):  # |PUSH4 EQ PUSH? JUMPI| 或者 |PUSH4 DUP2 EQ PUSH? JUMPI|
+                    selector_generator = [i, j + 2]
                     i = j + 2
                     part += 1
             # 拆分出 fun selector
             if part == 2:
                 if bc[j:j + 4] == '575b' or bc[j:j + 4] == '565b':  # |JUMPI| JUMPDEST 或者 |JUMP| JUMPDEST
-                    funs_selector = [i, j + 2]
+                    selector = [i, j + 2]
                     i = j + 2
                     part += 1
             # 拆分出 fallback impl
             if part == 3:
                 if bc[j:j + 2] == 'fd':  # |REVERT|
-                    fallback_imp = [i, j + 2]
+                    fallback_impl = [i, j + 2]
                     i = j + 2
                     part += 1
             # 拆分出 funs impl 和 log
             if part == 4:
                 if bc[j:j + 2] == '00' or bc[j:j + 2] == 'fe':  # |STOP(0x00)| 或者 |0xfe|
-                    funs_imp = [i, j + 2]
+                    funs_impl = [i, j + 2]
                     i = j + 2
                     part += 1
-                    log = [i, len(bc)]
+                    cbor = [i, len(bc)]
 
-            op = int(bc[j:j + 2], 16)
-            if int('60', 16) <= op <= int('7F', 16):
-                inc += (op - int('60', 16) + 1) * 2
+            opcode = int(bc[j:j + 2], 16)
+            if int('60', 16) <= opcode <= int('7F', 16):
+                inc += (opcode - int('60', 16) + 1) * 2
             j += inc
 
-        if constructor == [0, 0] or fallback_selector == [0, 0] or funs_selector == [0, 0] or \
-                fallback_imp == [0, 0] or funs_imp == [0, 0]:
+        if constructor == [0, 0] or selector_generator == [0, 0] or selector == [0, 0] or \
+                fallback_impl == [0, 0] or funs_impl == [0, 0]:
             raise TypeError
 
-        self.constructor = BasicPart(constructor[0], constructor[1], self.bytecode, 0)
-        base = 0
-        self.fallback_selector = BasicPart(fallback_selector[0], fallback_selector[1], bc, base)
-        base += len(self.fallback_selector)
-        self.funs_selector = BasicPart(funs_selector[0], funs_selector[1], bc, base)
-        base += len(self.funs_selector)
-        self.fallback_imp = BasicPart(fallback_imp[0], fallback_imp[1], bc, base)
-        base += len(self.fallback_imp)
-        self.funs_imp = BasicPart(funs_imp[0], funs_imp[1], bc, base)
-        base += len(self.funs_imp)
-        self.log = BasicPart(log[0], log[1], bc, base)
-        self.middle = BasicPart(fallback_selector[0], funs_imp[1], bc, 0)
+        self.constructor = Constructor(bc[constructor[0]:constructor[1]])
+        base = Hex('0')
+        self.selector_generator = SelectorGenerator(bc[selector_generator[0]:selector_generator[1]], base)
+        base += self.selector_generator.length
+        self.selector = Selector(bc[selector[0]:selector[1]], base)
+        base += self.selector.length
+        self.fallback_impl = FallbackImpl(bc[fallback_impl[0]:fallback_impl[1]], base)
+        base += self.fallback_impl.length
+        self.funs_impl = FunsImpl(bc[funs_impl[0]:funs_impl[1]], base)
+        base += self.funs_impl.length
+        self.cbor = CBOR(bc[cbor[0]:cbor[1]], Hex('0'))
 
-    # 以绝对字节位置替换一句操作码
-    def __setitem__(self, key: Hex, value):
-        base_all = [self.fallback_selector.base, self.funs_selector.base, self.fallback_imp.base, self.funs_imp.base,
-                    self.log.base]
-        parts = [self.log, self.funs_imp, self.fallback_imp, self.funs_selector, self.fallback_selector,
-                 self.constructor]
-        for i, base in enumerate(reversed(base_all)):
-            if key.num >= base.num:
-                curr = parts[i]
-                curr[key - curr.base] = value
-                break
+    @property
+    def middle(self):
+        middle_blocks = [self.selector_generator, self.selector, self.fallback_impl, self.funs_impl]
+        bytecode = ''
+        for middle_block in middle_blocks:
+            bytecode += middle_block.bytecode
+        return Middle(bytecode)
 
-    # TODO：等会弃用
-    def analysis_target(self):
-        bytecode = self.middle.bytecode
-        i = 0
-        pre = None
-        while i < len(bytecode):
-            inc = 2
-            curr = bytecode[i:i + 2]  # 当前指令
-            if int('60', 16) <= int(curr, 16) <= int('7F', 16):
-                inc += (int(curr, 16) - int('60', 16) + 1) * 2
-            pre = bytecode[i:i + inc]  # 上一次指令
-            i += inc
 
-    # 打印划分好的功能块
-    def __str__(self):
-        return "constructor: {}-{} {}\n".format(self.constructor.start, self.constructor.end,
-                                                self.constructor.bytecode) + \
-               "fallback_selector: {}-{} {}\n".format(self.fallback_selector.start, self.fallback_selector.end,
-                                                      self.fallback_selector.bytecode) + \
-               "funs_selector: {}-{} {}\n".format(self.funs_selector.start, self.funs_selector.end,
-                                                  self.funs_selector.bytecode) + \
-               "fallback_imp: {}-{} {}\n".format(self.fallback_imp.start, self.fallback_imp.end,
-                                                 self.fallback_imp.bytecode) + \
-               "funs_imp: {}-{} {}\n".format(self.funs_imp.start, self.funs_imp.end, self.funs_imp.bytecode) + \
-               "log: {}-{} {}\n".format(self.log.start, self.log.end, self.log.bytecode)
+class Trampoline(FBytecode):
+    pass
 
 
 # 以操作数(code)为输入, 生成合乎长度(length)的操作码与操作数
 # 当 length 不为 0 时, 则操作数为 length 字节长度, 多余的补零
 # 当 length 为 0 时, 则操作数为刚好能容下 code 的字节长度, 奇数长度补一个零
-def push_generator(code: str, length=Hex('0')) -> str:
+def push_generator(code: Hex, length=Hex('0')) -> str:
+    code = code.s
     code_length = len(code)
     if length.num == 0:
         length = Hex(math.ceil(code_length / 2))
@@ -227,128 +390,85 @@ def push_generator(code: str, length=Hex('0')) -> str:
     push_code = push_x + '0' * (length.num * 2 - code_length) + code
     return push_code
 
+# 生成蹦床, trampoline_length 为蹦床的总长度
+def trampoline_generator(patch_target: Hex, trampoline_length: Hex):
+    if trampoline_length < Hex('4'):
+        print("蹦床长度过短")
+        raise OverflowError
+    trampoline_bytecode = push_generator(patch_target, trampoline_length - Hex('3')) + '56' + '5b'
+    return Trampoline(trampoline_bytecode)
 
-def trampoline_patch_generator(patch_target: Hex, trampoline_length: Hex, patch_content: str, back_target: str,
-                               has_jumpdest=False) -> tuple[str, str]:
-    if not has_jumpdest:
-        trampoline = push_generator(patch_target.s, trampoline_length - Hex('2')) + '56'
-    else:
-        trampoline = push_generator(patch_target.s, trampoline_length - Hex('3')) + '56' + '5b'
-    patch = '5b' + patch_content + push_generator(back_target) + '56'
-    return trampoline, patch
+# 生成 jump 修正补丁
+def jump_patch_generator(replaced_code: FBytecode, offset: Hex, back_target: Hex) -> FBytecode:
+    patch = op.jumpdest + replaced_code.bytecode + push_generator(offset) + op.add + push_generator(back_target) + op.jump
+    return FBytecode(patch)
 
+# 合并字节码
+def combine_bytecode(src: Source, add: Addition):
+    # 找到新合约 funs_impl 中所有 jump(i) 的行号
+    jump_nums = list()
+    for i, opcode in enumerate(add.funs_impl):
+        if opcode[1] == op.jump or opcode[1] == op.jumpi:
+            jump_nums.append(i)
+    patch_target = src.middle.length + add.funs_impl.length
 
-def selector_generator(bytecode: str, offset=Hex('0')) -> str:
-    push_queue = queue.Queue()
-    i = 0
-    while i < len(bytecode):
-        inc = 2
-        curr = bytecode[i:i + 2]  # 当前指令
-        if int('60', 16) <= int(curr, 16) <= int('7F', 16):
-            inc += (int(curr, 16) - int('60', 16) + 1) * 2
-            push_queue.put(bytecode[i:i + inc])
-        i += inc
-    if push_queue.qsize() % 2 != 0:
-        print("队列非双数")
-        raise Exception
-    res = ''
-    while not push_queue.empty():
-        a = push_queue.get()
-        b = push_queue.get()
-        # 给加上移动的偏移
-        b = push_generator((Hex(b[2::]) + offset).s)
-        res += '80' + a + '14' + b + '57'
-
-    return res
-
-
-# 给合约加上初始化代码
-def add_constructor(bytecode: str) -> str:
-    template = ['608060405234801561001057600080fd5b50', '8061001f6000396000f300']  # constructor 的模板
-    # codecopy 的 length 参数的 push 操作码
-    length = push_generator(hex(len(bytecode) // 2).replace('0x', ''))
-    return template[0] + length + template[1] + bytecode
-
-
-# 合并两个合约
-def combine_bytecode(codeA: BytecodeAnalysis, codeB: BytecodeAnalysis) -> BytecodeAnalysis:
-    patch = ''
-    # 第一类补丁, 用于修正函数入口
-    # 修正第二个函数的, 利用相对于 funs_imp 的差值不变, - codeB.funs_imp.base 在求差值
-    # TODO：将 offset 分出为一个单独变量，因为这样更方便理解
-    patch_content = codeA[2].bytecode + selector_generator(codeB[2].bytecode, codeA.middle.length - codeB.funs_imp.base)
-    patch_base = codeA.middle.length + codeB.funs_imp.length
-    trampoline_t, patch_t = trampoline_patch_generator(patch_base, codeA.funs_selector.length,
-                                                       patch_content, codeA[3].base.s)
-    # 安装蹦床与记录补丁
-    codeA.funs_selector.replace(Hex('0'), codeA.funs_selector.length, trampoline_t)
-    patch += patch_t
-    patch_target = patch_base + Hex(len(patch) // 2)
-
-    # 第二类补丁, 用于修正 codeB.funs_imp 中所有的 JUMP ⑴ 找到 JUMP(I) 记录位置, 构建所有指令位置 ⑵ 比较指令位置, 选择合适的替换指令 ⑶ length 可得, content 可得需要加上原来被替换的地方, 回来位置可得 JUMP
-    bytecode = codeB.funs_imp.bytecode
-    jump_collections = []  # 记录所有 JUMP(I) 的位置
-    ops = dict()  # 以行的方式构建指令
-    counter = 0  # 行的计数器
-    i = 0
-    # 找到 JUMP(I) 位置
-    while i < len(bytecode):
-        inc = 2
-        curr = int(bytecode[i:i + 2], 16)  # 当前指令的 10 进制表示
-        if int('60', 16) <= curr <= int('7F', 16):  # 当为 PUSH 时
-            inc += (curr - int('60', 16) + 1) * 2
-        if curr == int('56', 16) or curr == int('57', 16):  # 当为 JUMP(I) 时
-            jump_collections.append(counter)
-        ops[counter] = (Hex(i // 2), bytecode[i:i + inc])  # 记录: 第几行 -> 字节位置, 字节码
-        i += inc
-        counter += 1
-
-    min_length = math.ceil(len(patch_target.s) / 2) + 3  # 蹦床最小所需直接长度字节长度, 比如跳转位置为 123, 则 min_length=ceil(3/2)+3=5
-    for line in jump_collections:
-        i = line - 1  # JUMP 从上一行开始检测合适的插入位置
+    # 修正新合约 funs_impl 中所有 jump(i)
+    patch = Patch()  # patch 类
+    for jump_num in jump_nums:
+        # 找到填充蹦床的起始位置 start
+        min_trampoline_length = patch_target.blength + Hex('3')
+        start = jump_num - 1  # 不替换 jump(i) 本身, 从上一行开始
         while True:
-            if ops[i][1] != '5b':  # 碰到了 JUMPDEST, 表示没有足够的位置合并
-                curr_length = ops[line][0] - ops[i][0]
-                if curr_length.num >= min_length:  # 空间足够
-                    # 跳转位置计算
-                    patch_target = patch_base + Hex(len(patch) // 2)
-                    # 跳转内容计算
-                    offset = codeA.middle.length - codeB.funs_imp.base
-                    patch_content = bytecode[ops[i][0].num * 2:ops[line][0].num * 2] + push_generator(
-                        offset.s) + '01'  # 原来的 + 新的
-                    # 回来目标计算
-                    back_target = (ops[line][0] - Hex('1') + codeA.middle.length).s  # 向上移动到 JUMPDEST
-                    trampoline_t, patch_t = trampoline_patch_generator(patch_target, curr_length,
-                                                                       patch_content, back_target, True)
-                    codeB.funs_imp.replace(ops[i][0], curr_length, trampoline_t)
-                    patch += patch_t
-                    min_length = math.ceil(len(patch_target.s) / 2) + 3
-                    break
-                else:
-                    i -= 1
-            else:
-                # TODO 把空间不够的那一部份字节码提出来并转为操作码
-                print("无法合并, 没有足够的替换空间")
-                return BytecodeAnalysis('')
+            curr_length = add.funs_impl.blength_by_line(start, jump_num - 1)
+            if add.funs_impl[start][1] == op.jumpdest:  # 不能碰到基本块
+                add.funs_impl.print_by_line(start, jump_num)
+                print("没有足够的空间")
+                raise OverflowError
+            if curr_length >= min_trampoline_length:
+                break
+            start -= 1
+        # 修正当前 jump(i)
+        # 生成与安装蹦床
+        trampoline = trampoline_generator(patch_target, curr_length)
+        add.funs_impl.replace_by_line(start, jump_num - 1, trampoline)
+        # 生成安装补丁
+        replaced_code = add.funs_impl.get_by_line(start, jump_num - 1)
+        offset = src.middle.length - add.funs_impl.base
+        back_target = add.funs_impl[start][0] + src.middle.length  # 实际要跳转的位置, 将 source 之前偏移量
+        patch_code = jump_patch_generator(replaced_code, offset, back_target)
+        patch_target += patch_code.length
+        patch += patch_code
+    src.append_funs_impl(add.funs_impl, patch)
 
-    res = codeA[1].bytecode + codeA[2].bytecode + codeA[3].bytecode + codeA[4].bytecode + \
-          codeB[4].bytecode + patch
+    # 更新选择器与蹦床
+    # 更新选择器
+    offset = src.middle.length - add.funs_impl.base
+    add.selector.update_offset(offset)
+    src.selector_revise_update(add.selector)
+    # 更新蹦床
+    selector_target = patch_target + src.selector_revise.length
+    src.selector_trampoline.update_target(selector_target)
 
-    res = add_constructor(res)
-    # TODO 更新一个 codeA 的 BytecodeAnalysis，而不是创建一个新的
-    return BytecodeAnalysis(res)
+    # 更新 CBOR
+    src.cbor_update(add.cbor)
+
+    # 更新 constructor
+    src.constructor_update()
+
+    return src
 
 
+print(to_opcode('608060405234801561001057600080fd5b50336000806101000a81548173ffffffffffffffffffffffffffffffffffffffff021916908373ffffffffffffffffffffffffffffffffffffffff16021790555060008054906101000a900473ffffffffffffffffffffffffffffffffffffffff1673ffffffffffffffffffffffffffffffffffffffff16600073ffffffffffffffffffffffffffffffffffffffff167f342827c97908e5e2f71151c08502a66d44b6f758e3ac2f1de95f02eb95f0a73560405160405180910390a3610356806100db6000396000f3fe608060405234801561001057600080fd5b50600436106100365760003560e01c8063893d20e81461003b578063a6f9dae114610059575b600080fd5b610043610075565b604051610050919061025d565b60405180910390f35b610073600480360381019061006e91906101fe565b61009e565b005b60008060009054906101000a900473ffffffffffffffffffffffffffffffffffffffff16905090565b60008054906101000a900473ffffffffffffffffffffffffffffffffffffffff1673ffffffffffffffffffffffffffffffffffffffff163373ffffffffffffffffffffffffffffffffffffffff161461012c576040517f08c379a000000000000000000000000000000000000000000000000000000000815260040161012390610278565b60405180910390fd5b8073ffffffffffffffffffffffffffffffffffffffff1660008054906101000a900473ffffffffffffffffffffffffffffffffffffffff1673ffffffffffffffffffffffffffffffffffffffff167f342827c97908e5e2f71151c08502a66d44b6f758e3ac2f1de95f02eb95f0a73560405160405180910390a3806000806101000a81548173ffffffffffffffffffffffffffffffffffffffff021916908373ffffffffffffffffffffffffffffffffffffffff16021790555050565b6000813590506101f881610309565b92915050565b600060208284031215610214576102136102db565b5b6000610222848285016101e9565b91505092915050565b610234816102a9565b82525050565b6000610247601383610298565b9150610252826102e0565b602082019050919050565b6000602082019050610272600083018461022b565b92915050565b600060208201905081810360008301526102918161023a565b9050919050565b600082825260208201905092915050565b60006102b4826102bb565b9050919050565b600073ffffffffffffffffffffffffffffffffffffffff82169050919050565b600080fd5b7f43616c6c6572206973206e6f74206f776e657200000000000000000000000000600082015250565b610312816102a9565b811461031d57600080fd5b5056fea26469706673582212208f65d9c920a5e7c951f66594688d8b1bb886420d647e05d3e5c9ec7eeab019cd64736f6c63430008070033'))
 add_bytecode = '6080604052348015600f57600080fd5b50609c8061001e6000396000f300608060405260043610603e5763ffffffff7c0100000000000000000000000000000000000000000000000000000000600035041663a836572881146043575b600080fd5b348015604e57600080fd5b506058600435606a565b60408051918252519081900360200190f35b600101905600a165627a7a723058201b5930ac885210ff114b55848f959850c81886c515ec221eb475490f85e319a50029'
 double_bytecode = '6080604052348015600f57600080fd5b50609c8061001e6000396000f300608060405260043610603e5763ffffffff7c0100000000000000000000000000000000000000000000000000000000600035041663eee9720681146043575b600080fd5b348015604e57600080fd5b506058600435606a565b60408051918252519081900360200190f35b600202905600a165627a7a72305820f3a6ecd64c261907682d5ce13a40341199a16032194121592a8017e6692158de0029'
 hello_bytecode = '608060405234801561001057600080fd5b5061017c806100206000396000f3fe608060405234801561001057600080fd5b506004361061002b5760003560e01c806319ff1d2114610030575b600080fd5b61003861004e565b6040516100459190610124565b60405180910390f35b60606040518060400160405280600b81526020017f68656c6c6f20776f726c64000000000000000000000000000000000000000000815250905090565b600081519050919050565b600082825260208201905092915050565b60005b838110156100c55780820151818401526020810190506100aa565b838111156100d4576000848401525b50505050565b6000601f19601f8301169050919050565b60006100f68261008b565b6101008185610096565b93506101108185602086016100a7565b610119816100da565b840191505092915050565b6000602082019050818103600083015261013e81846100eb565b90509291505056fea2646970667358221220dac56691e4e7399d1cd082465dc09cff423a7ed5f52c84162e8ff8859bc6764e64736f6c634300080b0033'
 
-add_analysis = BytecodeAnalysis(add_bytecode)
-double_analysis = BytecodeAnalysis(double_bytecode)
-hello_analysis = BytecodeAnalysis(hello_bytecode)
+add_analysis = Addition(add_bytecode)
+double_analysis = Addition(double_bytecode)
+hello_analysis = Addition(hello_bytecode)
 
 # for part in hello_analysis:  # 检验划分问题
 #     print(part.bytecode)
 
 # print(combine_bytecode(add_analysis, double_analysis).bytecode)
-print(to_opcode('608060405260043610603e5763ffffffff7c0100000000000000000000000000000000000000000000000000000000600035041667000000000000009f565b600080fd5b348015604e57600080fd5b506058600435606a565b60408051918252519081900360200190f35b6001019056005b3460b7565b57600080fd5b5060586100c2565b565b60408051918252519081900360200190f35b60ce565b56005b63a836572881146043578063eee9720614607157603e565b8015604e602e016076565b600435606a602e016084565b60020290602e01609c56'))
+# print(to_opcode('608060405260043610603e5763ffffffff7c0100000000000000000000000000000000000000000000000000000000600035041667000000000000009f565b600080fd5b348015604e57600080fd5b506058600435606a565b60408051918252519081900360200190f35b6001019056005b3460b7565b57600080fd5b5060586100c2565b565b60408051918252519081900360200190f35b60ce565b56005b63a836572881146043578063eee9720614607157603e565b8015604e602e016076565b600435606a602e016084565b60020290602e01609c56'))

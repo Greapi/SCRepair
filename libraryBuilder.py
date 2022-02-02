@@ -1,5 +1,5 @@
 import json
-from conbinPatch import combine_bytecode, BytecodeAnalysis
+from conbinPatch import combine_bytecode, Addition
 from web3 import Web3
 
 proxy_abi = json.loads('[{"inputs":[{"internalType":"address","name":"impl","type":"address"}],"stateMutability":"nonpayable","type":"constructor"},{"inputs":[{"internalType":"bytes","name":"funsig","type":"bytes"}],"name":"exec","outputs":[{"internalType":"bool","name":"","type":"bool"},{"internalType":"bytes","name":"","type":"bytes"}],"stateMutability":"nonpayable","type":"function"},{"inputs":[],"name":"implLibrary","outputs":[{"internalType":"address","name":"","type":"address"}],"stateMutability":"view","type":"function"},{"inputs":[{"internalType":"address","name":"newImpl","type":"address"}],"name":"updateImpl","outputs":[],"stateMutability":"nonpayable","type":"function"}]')
@@ -25,10 +25,10 @@ class DISTLibrary:
         # 赋值
         self.impl = web3.eth.contract(address=impl_addr, abi=impl_abi)
         self.proxy = web3.eth.contract(address=proxy_addr, abi=proxy_abi)
-        self.curr_analysis_code = BytecodeAnalysis(impl_bytecode)
+        self.curr_analysis_code = Addition(impl_bytecode)
 
     def append(self, bytecode: str):
-        code_analysis = BytecodeAnalysis(bytecode)
+        code_analysis = Addition(bytecode)
         combined = combine_bytecode(self.curr_analysis_code, code_analysis)
         print(combined.bytecode)
         # 将合并后的实现合约部署
