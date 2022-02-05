@@ -7,13 +7,15 @@ class Hex:
         if type(num) == int:
             self.hex_str = hex(num).replace('0x', '')
             self.num = num
-            self.blength = Hex(math.ceil(len(self.hex_str)/2))  # 字符长度
         elif type(num) == str:
             self.hex_str = hex(int(num, 16)).replace('0x', '')
             self.num = int(num, 16)
-            self.blength = Hex(math.ceil(len(self.hex_str) / 2))
         else:
             raise TypeError
+
+    @property
+    def blength(self):
+        return Hex(math.ceil(len(self.hex_str)/2))  # 字符长度
 
     def __add__(self, other):
         return Hex(hex(self.num + other.num))
@@ -36,10 +38,15 @@ class Hex:
     def __ge__(self, other):
         return self.num >= other.num
 
+    def __eq__(self, other):
+        return self.num == other.num
+
+    def __ne__(self, other):
+        return self.num != other.num
+
     def __iadd__(self, other):
         self.num += other.num
         self.hex_str = hex(self.num).replace('0x', '')
-        self.blength = Hex(math.ceil(len(self.hex_str)/2))
         return self
 
     @property
