@@ -512,18 +512,18 @@ def combine_bytecode(src: Source, add: Addition):
     start_end_trampolines = []  # 蹦床的开始+结尾+蹦床本身
     for jump_num in jump_nums:
         start = jump_num - 1  # 不替换 jump(i) 本身, 从上一行开始
+        # 采用修正 CGF 的方案
         if start == jump_num - 1 and is_push(add.funs_impl[start][1]):
             limited_length = Hex(len(add.funs_impl[start][2])//2)  # 新的target不能超过此字节数
             # 以下所有类为 Hex 类
             old_target = Hex(add.funs_impl[start][2])
             offset = src.middle.length - add.funs_impl.base
             new_target = old_target + offset
-
+            # 判断新的跳转目标可否在不影响直接偏置的情况加入
             if new_target.blength <= limited_length:
                 push_bytecode = push_generator(new_target, limited_length)
                 start_end_trampolines.append((start, start, Trampoline(push_bytecode)))
                 continue
-
         # 找到填充蹦床的起始位置 start
         min_trampoline_length = patch_target.blength + Hex('3')
         while True:
