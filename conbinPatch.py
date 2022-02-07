@@ -365,20 +365,12 @@ class Addition(FBytecode):
         self._divider(contract)
 
     def _divider(self, contract):
-        def match(bytecode: str) -> bool:
-            _j = 0
-            ops = []
-            while _j < len(bytecode):
-                _inc = 2
-                ops.append(bytecode[_j:_j + 2])
-                _op = int(bytecode[_j:_j + 2], 16)
-                if int('60', 16) <= _op <= int('7F', 16):
-                    _inc += (_op - int('60', 16) + 1) * 2
-                _j += _inc
-            if len(ops) >= 2 and not (int('60', 16) <= int(ops[-2], 16) <= int('7F', 16)):  # 倒数第二个必须是 PUSH
-                return False
-            ops = ops[0:-2] + ops[-1::]  # 去除倒数第二个
-            return ops == ['63', '14', '57'] or ops == ['63', '81', '14', '57']
+        def match_end_log(bytecode: str) -> bool:
+            end = ['00', 'fe']
+            log = ['a1', 'a2', 'a3', 'a4']
+            if bytecode[0:2] in end and bytecode[2:4] in log:
+                return True
+            return False
 
         constructor = selector_generator = selector = fallback_impl = funs_impl = cbor = [0, 0]
         bc = contract
@@ -412,8 +404,8 @@ class Addition(FBytecode):
                     i = j + 2
                     part += 1
             # 拆分出 funs impl 和 log
-            if part == 4:
-                if bc[j:j + 2] == '00' or bc[j:j + 2] == 'fe':  # |STOP(0x00)| 或者 |0xfe|
+            if part == 4:  # TODO 00/fe + a1/a2/a3/a4
+                if match_end_log(bc[j:j+4]):  # |STOP(0x00)| 或者 |0xfe| + LOG1-LOG4
                     funs_impl = [i, j + 2]
                     i = j + 2
                     part += 1
