@@ -67,12 +67,13 @@ class FBytecode:
                                      EvmBytecode(line[1] + line[2]).disassemble().as_string)  # 行号 - 字节位置 - 操作数 - 操作码
         print(s)
 
-    def replace_by_line(self, start_end_trampoline: list):
+    def replace_by_line_generator(self, start_end_trampoline: list):
+        bytecode = self.bytecode
         for start, end, trampoline in start_end_trampoline:
             start_h = self.formatted_bytecode[start][0]
             end_h = self.formatted_bytecode[end][0] + self._blength_of_line(end)
-            self.bytecode = self.bytecode[0:start_h.num * 2] + trampoline.bytecode + self.bytecode[end_h.num * 2::]
-        self.update(self.bytecode)
+            bytecode = bytecode[0:start_h.num * 2] + trampoline.bytecode + bytecode[end_h.num * 2::]
+        return FBytecode(bytecode)
 
     def get_by_line(self, start: int, end: int):
         start_h = self.formatted_bytecode[start][0]
@@ -99,6 +100,10 @@ class FunBlock(FBytecode):
     def update_funBlock(self, bytecode: str, base: Hex):
         super(FunBlock, self).update(bytecode)
         self.base = copy.deepcopy(base)
+
+    def replace_by_line_generator(self, start_end_trampoline: list):
+        fBytecode = super(FunBlock, self).replace_by_line_generator(start_end_trampoline)
+        return FunBlock(fBytecode.bytecode, self.base)
 
 
 class Constructor(FBytecode):
@@ -388,9 +393,9 @@ class Addition(FBytecode):
                     i = j + 2
                     part += 1
             # 拆分出 fallback selector
-            if part == 1:
-                if match(bc[j + 2:j + 22]) or match(
-                        bc[j + 2:j + 24]):  # |PUSH4 EQ PUSH? JUMPI| 或者 |PUSH4 DUP2 EQ PUSH? JUMPI|
+            if part == 1:  # TODO 可能出错
+                if (bc[j:j + 4] == '8063' and bc[j + 2:j + 12] != '63ffffffff') or \
+                        (bc[j + 2:j + 4] == '63' and bc[j + 2:j + 12] != '63ffffffff'):
                     selector_generator = [i, j + 2]
                     i = j + 2
                     part += 1
@@ -488,15 +493,17 @@ def trampoline_generator(patch_target: Hex, trampoline_length: Hex):
 
 
 # 生成 jump 修正补丁
-def jump_patch_generator(replaced_code: FBytecode, offset: Hex, back_target: Hex) -> FBytecode:
-    patch = op.jumpdest + replaced_code.bytecode + push_generator(offset) + op.add + push_generator(
+def jump_patch_generator(replaced_code: FBytecode, offset: Hex, back_target: Hex, jump_type: str) -> FBytecode:
+    patch = op.jumpdest + replaced_code.bytecode + push_generator(offset) + op.add + jump_type + push_generator(
         back_target) + op.jump
     return FBytecode(patch)
+
 
 # 判断是否为 push, 一个过度函数
 def is_push(opcode: str) -> bool:
     opcode_dec = int(opcode, 16)
     return int('60', 16) <= opcode_dec <= int('7F', 16)
+
 
 # 合并字节码
 def combine_bytecode(src: Source, add: Addition):
@@ -511,23 +518,25 @@ def combine_bytecode(src: Source, add: Addition):
     patch = Patch(patch_target)  # patch 类
     start_end_trampolines = []  # 蹦床的开始+结尾+蹦床本身
     for jump_num in jump_nums:
-        start = jump_num - 1  # 不替换 jump(i) 本身, 从上一行开始
-        # 采用修正 CGF 的方案
-        if start == jump_num - 1 and is_push(add.funs_impl[start][1]):
-            limited_length = Hex(len(add.funs_impl[start][2])//2)  # 新的target不能超过此字节数
+        start = jump_num  # 替换 jump(i) 本身, 从当前行开始
+        # 采用 CGF 的方案, 对 jump(i) 的上一行判断
+        opcode = add.funs_impl[jump_num - 1][1]
+        operand = add.funs_impl[jump_num - 1][2]
+        if is_push(opcode):
+            limited_length = Hex(len(operand) // 2)  # 新的target不能超过此字节数
             # 以下所有类为 Hex 类
-            old_target = Hex(add.funs_impl[start][2])
+            old_target = Hex(operand)
             offset = src.middle.length - add.funs_impl.base
             new_target = old_target + offset
             # 判断新的跳转目标可否在不影响直接偏置的情况加入
             if new_target.blength <= limited_length:
                 push_bytecode = push_generator(new_target, limited_length)
-                start_end_trampolines.append((start, start, Trampoline(push_bytecode)))
+                start_end_trampolines.append((jump_num - 1, jump_num - 1, Trampoline(push_bytecode)))
                 continue
         # 找到填充蹦床的起始位置 start
         min_trampoline_length = patch_target.blength + Hex('3')
         while True:
-            curr_length = add.funs_impl.blength_by_line(start, jump_num - 1)
+            curr_length = add.funs_impl.blength_by_line(start, jump_num)
             if add.funs_impl[start][1] == op.jumpdest:  # 不能碰到基本块
                 add.funs_impl.print_by_line(start, jump_num)
                 print("没有足够的空间")
@@ -539,12 +548,12 @@ def combine_bytecode(src: Source, add: Addition):
         # ⑴ 生成当前补丁
         replaced_code = add.funs_impl.get_by_line(start, jump_num - 1)
         offset = src.middle.length - add.funs_impl.base
-        # 跳转回来的位置为 -> jump(i)位置的上一字节, 这里会预设 jumpdest
+        # 跳转回来的位置为 -> jump(i)位置的当前字节, 这里会预设 jumpdest
         # src.middle.length 是未来合并后 add.funs_impl 的新基址
-        back_target = (add.funs_impl[jump_num][0] - Hex('1')) + src.middle.length
-        patch_curr = jump_patch_generator(replaced_code, offset, back_target)
+        back_target = add.funs_impl[jump_num][0] + src.middle.length
+        patch_curr = jump_patch_generator(replaced_code, offset, back_target, op.jump)
         # ⑵ 生成蹦床
-        start_end_trampolines.append((start, jump_num - 1, trampoline_generator(patch_target, curr_length)))
+        start_end_trampolines.append((start, jump_num, trampoline_generator(patch_target, curr_length)))
         # ⑶ 生成补丁
         patch_target += patch_curr.length
         patch += patch_curr
@@ -558,8 +567,8 @@ def combine_bytecode(src: Source, add: Addition):
     src.selector_trampoline.update_target(patch_target)
 
     # 修复 funs_impl 和 安装 jump_patch
-    add.funs_impl.replace_by_line(start_end_trampolines)
-    src.append_funs_impl(add.funs_impl, patch)
+    revised_funs_impl = add.funs_impl.replace_by_line_generator(start_end_trampolines)
+    src.append_funs_impl(revised_funs_impl, patch)
 
     # 更新 CBOR
     src.cbor_update(add.cbor)
@@ -586,15 +595,17 @@ def addition_to_source(add: Addition) -> Source:
     return copy.deepcopy(src)
 
 
-add1_bytecode = '6080604052348015600f57600080fd5b50609c8061001e6000396000f300608060405260043610603e5763ffffffff7c0100000000000000000000000000000000000000000000000000000000600035041663a836572881146043575b600080fd5b348015604e57600080fd5b506058600435606a565b60408051918252519081900360200190f35b600101905600a165627a7a723058201b5930ac885210ff114b55848f959850c81886c515ec221eb475490f85e319a50029'
-double_bytecode = '6080604052348015600f57600080fd5b50609c8061001e6000396000f300608060405260043610603e5763ffffffff7c0100000000000000000000000000000000000000000000000000000000600035041663eee9720681146043575b600080fd5b348015604e57600080fd5b506058600435606a565b60408051918252519081900360200190f35b600202905600a165627a7a72305820f3a6ecd64c261907682d5ce13a40341199a16032194121592a8017e6692158de0029'
-sign_bytecode = '608060405234801561001057600080fd5b506103c4806100206000396000f3fe608060405234801561001057600080fd5b506004361061002b5760003560e01c806379d6348d14610030575b600080fd5b61004a60048036038101906100459190610168565b610060565b60405161005791906101f9565b60405180910390f35b60606002604051602401610074919061021b565b6040516020818303038152906040527febc78ceb000000000000000000000000000000000000000000000000000000007bffffffffffffffffffffffffffffffffffffffffffffffffffffffff19166020820180517bffffffffffffffffffffffffffffffffffffffffffffffffffffffff83818316178352505050509050919050565b600061010b6101068461025b565b610236565b9050828152602081018484840111156101275761012661036e565b5b6101328482856102c7565b509392505050565b600082601f83011261014f5761014e610369565b5b813561015f8482602086016100f8565b91505092915050565b60006020828403121561017e5761017d610378565b5b600082013567ffffffffffffffff81111561019c5761019b610373565b5b6101a88482850161013a565b91505092915050565b60006101bc8261028c565b6101c68185610297565b93506101d68185602086016102d6565b6101df8161037d565b840191505092915050565b6101f3816102b5565b82525050565b6000602082019050818103600083015261021381846101b1565b905092915050565b600060208201905061023060008301846101ea565b92915050565b6000610240610251565b905061024c8282610309565b919050565b6000604051905090565b600067ffffffffffffffff8211156102765761027561033a565b5b61027f8261037d565b9050602081019050919050565b600081519050919050565b600082825260208201905092915050565b600060ff82169050919050565b60006102c0826102a8565b9050919050565b82818337600083830152505050565b60005b838110156102f45780820151818401526020810190506102d9565b83811115610303576000848401525b50505050565b6103128261037d565b810181811067ffffffffffffffff821117156103315761033061033a565b5b80604052505050565b7f4e487b7100000000000000000000000000000000000000000000000000000000600052604160045260246000fd5b600080fd5b600080fd5b600080fd5b600080fd5b6000601f19601f830116905091905056fea264697066735822122076f424f75f2b522810fb433195931bbf5e25eb21b8d68b46814674772360557864736f6c63430008070033'
-addition_add1 = Addition(add1_bytecode)
-source_add1 = addition_to_source(addition_add1)
-addition_double = Addition(double_bytecode)
-addition_sign = Addition(sign_bytecode)
+if __name__ == '__main__':
+    # abi = json.loads('[{"constant":false,"inputs":[{"name":"start","type":"uint256"},{"name":"n","type":"uint256"}],"name":"fibonacci","outputs":[{"name":"","type":"uint256"}],"payable":false,"stateMutability":"nonpayable","type":"function"},{"constant":true,"inputs":[{"name":"a","type":"uint256"}],"name":"add1","outputs":[{"name":"","type":"uint256"}],"payable":false,"stateMutability":"view","type":"function"},{"constant":true,"inputs":[{"name":"num","type":"uint256"}],"name":"double","outputs":[{"name":"","type":"uint256"}],"payable":false,"stateMutability":"view","type":"function"}]')
+    add1_bytecode = '6080604052348015600f57600080fd5b50609c8061001e6000396000f300608060405260043610603e5763ffffffff7c0100000000000000000000000000000000000000000000000000000000600035041663a836572881146043575b600080fd5b348015604e57600080fd5b506058600435606a565b60408051918252519081900360200190f35b600101905600a165627a7a723058201b5930ac885210ff114b55848f959850c81886c515ec221eb475490f85e319a50029'
+    double_bytecode = '6080604052348015600f57600080fd5b50609c8061001e6000396000f300608060405260043610603e5763ffffffff7c0100000000000000000000000000000000000000000000000000000000600035041663eee9720681146043575b600080fd5b348015604e57600080fd5b506058600435606a565b60408051918252519081900360200190f35b600202905600a165627a7a72305820f3a6ecd64c261907682d5ce13a40341199a16032194121592a8017e6692158de0029'
+    time_lock_bytecode = '608060405234801561001057600080fd5b5060d88061001f6000396000f300608060405260043610603e5763ffffffff7c0100000000000000000000000000000000000000000000000000000000600035041663421ec76581146043575b600080fd5b348015604e57600080fd5b50605b600435602435606d565b60408051918252519081900360200190f35b6000811515607b57508160a6565b8160011415608c57506001820160a6565b60978360028403606d565b60a28460018503606d565b0190505b929150505600a165627a7a72305820924e3776cadabeb78157c4953a03fef645eca8938de0cd5d40b5cdb2b23c24410029'
+    addition_add1 = Addition(add1_bytecode)
+    source_add1 = addition_to_source(addition_add1)
+    addition_double = Addition(double_bytecode)
+    addition_time_lock = Addition(time_lock_bytecode)
 
-com1 = combine_bytecode(source_add1, addition_double)
-com2 = combine_bytecode(com1, addition_sign)
+    com1 = combine_bytecode(source_add1, addition_double)
+    com2 = combine_bytecode(com1, addition_time_lock)
 
-print(com2.bytecode)
+    print(com2.bytecode)

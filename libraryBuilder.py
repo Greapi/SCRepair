@@ -30,9 +30,9 @@ class DISTLibrary:
     def append(self, bytecode: str):
         code_analysis = Addition(bytecode)
         combined = combine_bytecode(self.curr_analysis_code, code_analysis)
-        print(combined.bytecode)
+        print(combined.bytecode1)
         # 将合并后的实现合约部署
-        new_impl = web3.eth.contract(abi=impl_abi, bytecode=combined.bytecode)
+        new_impl = web3.eth.contract(abi=impl_abi, bytecode=combined.bytecode1)
         tx_hash = new_impl.constructor().transact()
         new_impl_addr = web3.eth.get_transaction_receipt(tx_hash)['contractAddress']
         # 更改代理合约中的实现合约地址
