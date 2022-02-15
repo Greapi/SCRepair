@@ -349,7 +349,7 @@ class Source(FBytecode):
 
     def __str__(self):
         s = super(Source, self).__str__()
-        s += "CBOR共 {} 字节".format(self.cbor.length)
+        s += "Metadata 共 {} 字节: {}".format(self.cbor.length, self.cbor.bytecode)
         return s
 
 
@@ -385,7 +385,7 @@ class Addition(FBytecode):
                     i = j + 2
                     part += 1
             # 拆分出 fallback selector
-            if part == 1:  # TODO 可能出错
+            if part == 1:
                 if (bc[j:j + 4] == '8063' and bc[j + 2:j + 12] != '63ffffffff') or \
                         (bc[j + 2:j + 4] == '63' and bc[j + 2:j + 12] != '63ffffffff'):
                     selector_generator = [i, j + 2]
@@ -404,7 +404,7 @@ class Addition(FBytecode):
                     i = j + 2
                     part += 1
             # 拆分出 funs impl 和 log
-            if part == 4:  # TODO 00/fe + a1/a2/a3/a4
+            if part == 4:
                 if match_end_log(bc[j:j+4]):  # |STOP(0x00)| 或者 |0xfe| + LOG1-LOG4
                     funs_impl = [i, j + 2]
                     i = j + 2
@@ -456,6 +456,11 @@ class Addition(FBytecode):
         for middle_block in middle_blocks:
             bytecode += middle_block.bytecode
         return Middle(middle_blocks)
+
+    def __str__(self):
+        s = super(Addition, self).__str__()
+        s += "Metadata 共 {} 字节: {}".format(self.cbor.length, self.cbor.bytecode)
+        return s
 
 
 class Trampoline(FBytecode):
@@ -592,12 +597,14 @@ if __name__ == '__main__':
     add1_bytecode = '6080604052348015600f57600080fd5b50609c8061001e6000396000f300608060405260043610603e5763ffffffff7c0100000000000000000000000000000000000000000000000000000000600035041663a836572881146043575b600080fd5b348015604e57600080fd5b506058600435606a565b60408051918252519081900360200190f35b600101905600a165627a7a723058201b5930ac885210ff114b55848f959850c81886c515ec221eb475490f85e319a50029'
     double_bytecode = '6080604052348015600f57600080fd5b50609c8061001e6000396000f300608060405260043610603e5763ffffffff7c0100000000000000000000000000000000000000000000000000000000600035041663eee9720681146043575b600080fd5b348015604e57600080fd5b506058600435606a565b60408051918252519081900360200190f35b600202905600a165627a7a72305820f3a6ecd64c261907682d5ce13a40341199a16032194121592a8017e6692158de0029'
     fibonacci_bytecode = '608060405234801561001057600080fd5b5060d88061001f6000396000f300608060405260043610603e5763ffffffff7c0100000000000000000000000000000000000000000000000000000000600035041663421ec76581146043575b600080fd5b348015604e57600080fd5b50605b600435602435606d565b60408051918252519081900360200190f35b6000811515607b57508160a6565b8160011415608c57506001820160a6565b60978360028403606d565b60a28460018503606d565b0190505b929150505600a165627a7a72305820924e3776cadabeb78157c4953a03fef645eca8938de0cd5d40b5cdb2b23c24410029'
-    addition_add1 = Addition(add1_bytecode)
-    source_add1 = addition_to_source(addition_add1)
-    addition_double = Addition(double_bytecode)
-    addition_time_lock = Addition(fibonacci_bytecode)
-
-    com1 = combine_bytecode(source_add1, addition_double)
-    com2 = combine_bytecode(com1, addition_time_lock)
-
-    print(com2.bytecode)
+    test_bytecode = '602b565b60006001905060005b8381101560235782820291505b600181019050600c565b505b92915050565b'
+    print(to_opcode(test_bytecode))
+    # addition_add1 = Addition(add1_bytecode)
+    # source_add1 = addition_to_source(addition_add1)
+    # addition_double = Addition(double_bytecode)
+    # addition_time_lock = Addition(fibonacci_bytecode)
+    #
+    # com1 = combine_bytecode(source_add1, addition_double)
+    # com2 = combine_bytecode(com1, addition_time_lock)
+    #
+    # print(com2.bytecode)
