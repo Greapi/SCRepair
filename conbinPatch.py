@@ -1,3 +1,5 @@
+import os
+import json
 from evmdasm import EvmBytecode
 import math
 from utils import Hex, to_opcode
@@ -391,6 +393,7 @@ class Addition(FBytecode):
                 raise BaseException("Selector 筛选出错")
             return min(target)
         constructor = selector_generator = selector = fallback_impl = funs_impl = cbor = [0, 0]
+        had_calldataload = False
         bc = contract
         i, j = 0, 0
         part = 0
@@ -404,6 +407,8 @@ class Addition(FBytecode):
                     part += 1
             # 拆分出 generator
             if part == 1:
+                if bc[j:j+2] == op.calldataload:
+                    had_calldataload = True
                 if (bc[j:j + 4] == '8063' and bc[j + 2:j + 12] != '63ffffffff') or \
                         (bc[j + 2:j + 4] == '63' and bc[j + 2:j + 12] != '63ffffffff'):
                     selector_generator = [i, j + 2]
@@ -436,7 +441,7 @@ class Addition(FBytecode):
 
         if constructor == [0, 0] or selector_generator == [0, 0] or selector == [0, 0] or \
                 fallback_impl == [0, 0] or funs_impl == [0, 0]:
-            raise TypeError
+            raise IndexError("划分失败")
 
         self.constructor = Constructor(bc[constructor[0]:constructor[1]])
         base = Hex('0')
@@ -611,19 +616,40 @@ def addition_to_source(add: Addition) -> Source:
 
 
 if __name__ == '__main__':
-    a = Addition('608060405234801561001057600080fd5b5060d48061001f6000396000f3fe608060405260043610601c5760003560e01c806312065fe014607f575b7f909c57d5c6ac08245cf2a6de3900e2b868513fa59099b92b27d8db823d92df9c5a60405190815260200160405180910390a160405162461bcd60e51b81526020600482015260016024820152606b60f81b604482015260640160405180910390fd5b348015608a57600080fd5b504760405190815260200160405180910390f3fea2646970667358221220145395ac7890445828b59945e9593ab8919952bb83ad366fc498e807b422da9864736f6c634300080b0033')
-    # abi = json.loads('[{"constant":false,"inputs":[{"name":"start","type":"uint256"},{"name":"n","type":"uint256"}],"name":"fibonacci","outputs":[{"name":"","type":"uint256"}],"payable":false,"stateMutability":"nonpayable","type":"function"},{"constant":true,"inputs":[{"name":"a","type":"uint256"}],"name":"add1","outputs":[{"name":"","type":"uint256"}],"payable":false,"stateMutability":"view","type":"function"},{"constant":true,"inputs":[{"name":"num","type":"uint256"}],"name":"double","outputs":[{"name":"","type":"uint256"}],"payable":false,"stateMutability":"view","type":"function"}]')
+    def get_unit_test(contract: str) -> list:
+        add = Addition(contract)
+        part = [add.constructor, add.selector_generator, add.selector, add.fallback_impl, add.funs_impl, add.cbor]
+        return [contract, list(map(lambda x: x.bytecode, part))]
+
+    def add_unit_test(contract: str):
+        unit_test = get_unit_test(contract)
+        try:
+            with open('dividerUnitTest.txt', 'r', encoding='utf8') as f:
+                unit_tests = json.loads(f.read())
+            unit_tests.append(unit_test)
+            with open('dividerUnitTest.txt', 'w', encoding='utf8') as f:
+                f.write(json.dumps(unit_tests))
+        except:
+            with open('dividerUnitTest.txt', 'w', encoding='utf8') as f:
+                f.write(json.dumps([unit_test]))
+
+    def test_divider() -> bool:
+        cons = True
+        try:
+            with open('dividerUnitTest.txt', 'r', encoding='utf8') as f:
+                unit_tests = json.loads(f.read())
+        except:
+            print("单元测试文件不存在或者单元测试数据出错")
+        for contract, test_res in unit_tests:
+            curr = Addition(contract)
+            part = [curr.constructor, curr.selector_generator, curr.selector, curr.fallback_impl, curr.funs_impl, curr.cbor]
+            curr_res = list(map(lambda x: x.bytecode, part))
+            cons = cons and curr_res == test_res
+        return cons
+
+    unknown_bytecode = '608060405234801561001057600080fd5b5060d48061001f6000396000f3fe608060405260043610601c5760003560e01c806312065fe014607f575b7f909c57d5c6ac08245cf2a6de3900e2b868513fa59099b92b27d8db823d92df9c5a60405190815260200160405180910390a160405162461bcd60e51b81526020600482015260016024820152606b60f81b604482015260640160405180910390fd5b348015608a57600080fd5b504760405190815260200160405180910390f3fea2646970667358221220145395ac7890445828b59945e9593ab8919952bb83ad366fc498e807b422da9864736f6c634300080b0033'
     add1_bytecode = '6080604052348015600f57600080fd5b50609c8061001e6000396000f300608060405260043610603e5763ffffffff7c0100000000000000000000000000000000000000000000000000000000600035041663a836572881146043575b600080fd5b348015604e57600080fd5b506058600435606a565b60408051918252519081900360200190f35b600101905600a165627a7a723058201b5930ac885210ff114b55848f959850c81886c515ec221eb475490f85e319a50029'
     double_bytecode = '6080604052348015600f57600080fd5b50609c8061001e6000396000f300608060405260043610603e5763ffffffff7c0100000000000000000000000000000000000000000000000000000000600035041663eee9720681146043575b600080fd5b348015604e57600080fd5b506058600435606a565b60408051918252519081900360200190f35b600202905600a165627a7a72305820f3a6ecd64c261907682d5ce13a40341199a16032194121592a8017e6692158de0029'
     fibonacci_bytecode = '608060405234801561001057600080fd5b5060d88061001f6000396000f300608060405260043610603e5763ffffffff7c0100000000000000000000000000000000000000000000000000000000600035041663421ec76581146043575b600080fd5b348015604e57600080fd5b50605b600435602435606d565b60408051918252519081900360200190f35b6000811515607b57508160a6565b8160011415608c57506001820160a6565b60978360028403606d565b60a28460018503606d565b0190505b929150505600a165627a7a72305820924e3776cadabeb78157c4953a03fef645eca8938de0cd5d40b5cdb2b23c24410029'
-    test_bytecode = '602b565b60006001905060005b8381101560235782820291505b600181019050600c565b505b92915050565b'
-    print(to_opcode(test_bytecode))
-    # addition_add1 = Addition(add1_bytecode)
-    # source_add1 = addition_to_source(addition_add1)
-    # addition_double = Addition(double_bytecode)
-    # addition_time_lock = Addition(fibonacci_bytecode)
-    #
-    # com1 = combine_bytecode(source_add1, addition_double)
-    # com2 = combine_bytecode(com1, addition_time_lock)
-    #
-    # print(com2.bytecode)
+
+    print(test_divider())
