@@ -40,7 +40,7 @@ if __name__ == '__main__':
 
     contract = web3.eth.contract(address=contractAddress, abi=res[0])  # 创建一个合约
     # test-basicMath
-    # print(contract.functions.times(2, 3).call())
-    # print(contract.functions.dividedBy(16, 2).call())
-    # print(contract.functions.plus(5, 5).call())
-    # print(contract.functions.minus(18, 6).call())
+    print(contract.functions.times(2, 3).call())
+    print(contract.functions.dividedBy(16, 2).call())
+    print(contract.functions.plus(5, 5).call())
+    print(contract.functions.minus(18, 6).call())

@@ -426,7 +426,7 @@ class Addition(FBytecode):
             if part == 1:
                 if bc[j:j+2] == op.calldataload:
                     had_calldataload = True
-                if (bc[j:j + 4] == '8063' and bc[j + 2:j + 12] != '63ffffffff') or \
+                if (bc[j + 2:j + 6] == '8063' and bc[j + 2:j + 12] != '63ffffffff') or \
                         (bc[j + 2:j + 4] == '63' and bc[j + 2:j + 12] != '63ffffffff') and had_calldataload:
                     selector_generator = [i, j + 2]
                     i = j + 2
