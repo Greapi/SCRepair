@@ -3,6 +3,9 @@ from utils import Hex, to_opcode
 import os
 import csv
 import opcodes as op
+from solcx import compile_files
+import json
+from creatContract import combine_by_index, deploy, web3, abi_bytecode
 
 def is_push(opcode: str) -> bool:
     opcode_dec = int(opcode, 16)
@@ -154,13 +157,83 @@ def test_combine(file_folder: str, out=True):
 
     print("总计: {} 成功: {} 失败: {}".format(counter_t + counter_f, counter_t, counter_f))
 
+def find_not_enough_block(_contract: str):
+    add = Addition(_contract)
+    # 找到新合约 funs_impl 中所有 jump(i) 的行号
+    jump_nums = list()
+    for _i, opcode in enumerate(add.funs_impl):
+        if opcode[1] == op.jump or opcode[1] == op.jumpi:
+            jump_nums.append(_i)
+    for jump_num in jump_nums:
+        start = jump_num
+        # 采用 CGF 的方案, 对 jump(i) 的上一行判断
+        opcode = add.funs_impl[jump_num - 1][1]
+        operand = add.funs_impl[jump_num - 1][2]
+        if is_push(opcode) and Hex(len(operand) // 2) >= Hex('2'):  # 大于两个字节
+            continue
+        # 找到填充蹦床的起始位置 start
+        min_trampoline_length = Hex('4')
+        while True:
+            curr_length = add.funs_impl.blength_by_line(start, jump_num)
+            if add.funs_impl[start][1] == op.jumpdest:  # 碰到基本块代表没有足够的划分空间
+                add.funs_impl.print_by_line(start, jump_num+1)
+                print('~~~~~~~~~~~~~~~~~')
+            if curr_length >= min_trampoline_length:
+                break
+            start -= 1
+
+def compile_contract(folder: str) -> list:
+    os.path.isdir(folder)
+    match = {'0425': '0.4.25', '087': '0.8.7', '0810': '0.8.10'}
+    out_list = []
+    for root, dirs, files in os.walk(folder):
+        for file_name in files:
+            file_path = os.path.join(root, file_name)
+            pre = os.path.splitext(file_name)[0]
+            version = match[pre.split('_')[-1]]
+            compiled = compile_files([file_path], output_values=["abi", "bin"], solc_version=version,
+                                     optimize=True, optimize_runs=200)
+            items = compiled.popitem()[1]
+            out_list.append([file_name, items['abi'], items['bin']])
+
+    out_list.sort(key=lambda x: x[0])
+
+    return out_list
+
+def update_compiled_contract():
+    compiled_contract = compile_contract('test_contract')
+    with open('compileContract.txt', 'w', encoding='utf8') as f:
+        f.write(json.dumps(compiled_contract))
+
+def read_compiled_contract() -> list:
+    with open('compileContract.txt', 'r', encoding='utf8') as f:
+        return json.loads(f.read())
+
 
 if __name__ == '__main__':
+    pass
     # 批量测试划分模块是否正常
     # test_divider('valid_dataset')
 
     # 批量测试合并模块是否正常
-    test_combine('valid_dataset')
+    # test_combine('valid_dataset', False)
+
+    # 测试批量编译模块
+    update_compiled_contract()
+    # print(*read_compiled_contract(), sep='\n')
+
+    # 测试实际存在的库合约
+    # res = combine_by_index([13, 14], read_compiled_contract())
+    # contractAddress = deploy(*res)
+    # contract = web3.eth.contract(address=contractAddress, abi=res[0])
+    # print(contract.functions.tryAdd(2, 3).call())
+    # print(contract.functions.average(5, 7).call())
+
+    # 找到所有空间不足的基本块
+    for name, abi, bytecode in read_compiled_contract():
+        print(name)
+        find_not_enough_block(bytecode)
+        print('---------------------')
 
     # 用于测试某个特定的合约
     # _constructor = '61017e610030600b82828239805160001a6073146000811461002057610022565bfe5b5030600052607381538281f300'

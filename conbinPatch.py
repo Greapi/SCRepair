@@ -66,7 +66,7 @@ class FBytecode:
             line = self.formatted_bytecode[i]
             s += '{} {} {}\n'.format(i, line[0],
                                      EvmBytecode(line[1] + line[2]).disassemble().as_string)  # 行号 - 字节位置 - 操作数 - 操作码
-        print(s)
+        print(s, end='')
 
     def replace_by_line_generator(self, start_end_trampoline: list):
         bytecode = self.bytecode
