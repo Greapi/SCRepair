@@ -41,6 +41,7 @@ def index_opcode(file: str):
     with open('_' + file, 'w') as f:
         f.write(convert)
 
+
 if __name__ == "__main__":
     index_opcode('c.txt')
     print("ok")

@@ -22,6 +22,7 @@ def format_bytecode(bytecode) -> list:
         i += inc
     return res
 
+
 # 格式化字节码
 class FBytecode:
     def __init__(self, bytecode=''):
@@ -424,7 +425,7 @@ class Addition(FBytecode):
                     part += 1
             # 拆分出 generator
             if part == 1:
-                if bc[j:j+2] == op.calldataload:
+                if bc[j:j + 2] == op.calldataload:
                     had_calldataload = True
                 if (bc[j + 2:j + 6] == '8063' and bc[j + 2:j + 12] != '63ffffffff') or \
                         (bc[j + 2:j + 4] == '63' and bc[j + 2:j + 12] != '63ffffffff') and had_calldataload:
@@ -433,7 +434,7 @@ class Addition(FBytecode):
                     part += 1
             # 拆分出 selector
             if part == 2:
-                if bc[j:j + 2] == '57' and is_last_jumpi(bc[j+2:j+34]):  # 判断是否是最后一个 JUMPI
+                if bc[j:j + 2] == '57' and is_last_jumpi(bc[j + 2:j + 34]):  # 判断是否是最后一个 JUMPI
                     selector = [i, j + 2]
                     i = j + 2
                     part += 1
@@ -446,8 +447,8 @@ class Addition(FBytecode):
                 i = min_target_index
                 # 拆分 funs impl 和 CBOR, 利用 CBOR 的长度
                 cbor_ending_length = int(bc[-4::], 16) * 2 + 4  # 最后两个直接记录了CBOR的长度
-                funs_impl = [i, len(bc)-cbor_ending_length]
-                i = len(bc)-cbor_ending_length
+                funs_impl = [i, len(bc) - cbor_ending_length]
+                i = len(bc) - cbor_ending_length
                 cbor = [i, len(bc)]
                 break
 
@@ -521,18 +522,38 @@ def push_generator(code: Hex, length=Hex('0')) -> str:
 
 
 # 生成蹦床, trampoline_length 为蹦床的总长度
-def trampoline_generator(patch_target: Hex, trampoline_length: Hex):
-    if trampoline_length < Hex('4'):
-        print("蹦床长度过短")
-        raise OverflowError
-    trampoline_bytecode = push_generator(patch_target, trampoline_length - Hex('3')) + '56' + '5b'
+# @mode 为0, 对应情况0: 此跳转为 JUMP
+# @mode 为1, 对应情况1: 此跳转为 JUMPI 但下一行为 JUMPDEST
+# @mode 为2, 对应情况2: 此跳转为 JUMPI 且下一行不是 JUMPDEST
+def trampoline_generator(patch_target: Hex, trampoline_length: Hex, mode):
+    # 减 Hex('2') -> push 和 jump 两字节
+    if mode == 0 or mode == 1:
+        assert(trampoline_length >= Hex('3'))
+        trampoline_bytecode = push_generator(patch_target, trampoline_length - Hex('2')) + op.jump
+    # 减 Hex('3') -> push, jump, jumpdest 三字节
+    elif mode == 2:
+        assert(trampoline_length >= Hex('4'))
+        trampoline_bytecode = push_generator(patch_target, trampoline_length - Hex('3')) + '56' + '5b'
+    else:
+        raise IndexError("此 mode 不存在")
     return Trampoline(trampoline_bytecode)
 
 
 # 生成 jump 修正补丁
-def jump_patch_generator(replaced_code: FBytecode, offset: Hex, back_target: Hex, jump_type: str) -> FBytecode:
-    patch = op.jumpdest + replaced_code.bytecode + push_generator(offset) + op.add + jump_type + push_generator(
-        back_target) + op.jump
+# @mode 为0, 对应情况0: 此跳转为 JUMP
+# @mode 为1, 对应情况1: 此跳转为 JUMPI 但下一行为 JUMPDEST
+# @mode 为2, 对应情况2: 此跳转为 JUMPI 且下一行不是 JUMPDEST
+def jump_patch_generator(replaced_code: FBytecode, offset: Hex, back_target: Hex, mode) -> FBytecode:
+    if mode == 0:
+        patch = op.jumpdest + replaced_code.bytecode + push_generator(offset) + op.add + op.jump
+    elif mode == 1:
+        patch = op.jumpdest + replaced_code.bytecode + push_generator(offset) + op.add + op.jumpi + \
+                push_generator(back_target) + op.jump
+    elif mode == 2:
+        patch = op.jumpdest + replaced_code.bytecode + push_generator(offset) + op.add + op.jumpi + \
+                push_generator(back_target) + op.jump
+    else:
+        raise IndexError("此 mode 不存在")
     return FBytecode(patch)
 
 
@@ -576,9 +597,13 @@ def combine_bytecode(src: Source, add: Addition):
             curr_length = add.funs_impl.blength_by_line(start, jump_num)
             if add.funs_impl[start][1] == op.jumpdest:  # 不能碰到基本块
                 add.funs_impl.print_by_line(start, jump_num)
-                print("没有足够的空间")
-                raise OverflowError
-            if curr_length >= min_trampoline_length:
+                raise OverflowError("没有足够的空间")
+            # 情况0: 当为修正的 JUMP 时, 可以少一字节, 因为无须为下一句代码设置 JUMPDEST
+            # 情况1: 当为下一字节为 JUMPDEST 时, 可以少一字节, 因为跳转可以指向下一 JUMPDEST
+            # 情况2: 正常修正, 蹦床带有 JUMPDEST
+            if (curr_length >= min_trampoline_length-Hex('1') and add.funs_impl[jump_num][1] == op.jump) or \
+                    (curr_length >= min_trampoline_length-Hex('1') and add.funs_impl[jump_num+1][1] == op.jumpdest) or \
+                        curr_length >= min_trampoline_length:
                 break
             start -= 1
         # 修正当前 jump(i)
@@ -587,10 +612,18 @@ def combine_bytecode(src: Source, add: Addition):
         offset = src.middle.length - add.funs_impl.base
         # 跳转回来的位置为 -> jump(i)位置的当前字节, 这里会预设 jumpdest
         # src.middle.length 是未来合并后 add.funs_impl 的新基址
-        back_target = add.funs_impl[jump_num][0] + src.middle.length
-        patch_curr = jump_patch_generator(replaced_code, offset, back_target, op.jump)
+        if add.funs_impl[jump_num][1] == op.jump:  # 此时无须 back_target
+            back_target = Hex('0')
+            mode = 0
+        elif add.funs_impl[jump_num+1][1] == op.jumpdest:
+            back_target = add.funs_impl[jump_num+1][0] + src.middle.length
+            mode = 1
+        else:
+            back_target = add.funs_impl[jump_num][0] + src.middle.length
+            mode = 2
+        patch_curr = jump_patch_generator(replaced_code, offset, back_target, mode)
         # ⑵ 生成蹦床
-        start_end_trampolines.append((start, jump_num, trampoline_generator(patch_target, curr_length)))
+        start_end_trampolines.append((start, jump_num, trampoline_generator(patch_target, curr_length, mode)))
         # ⑶ 生成补丁
         patch_target += patch_curr.length
         patch += patch_curr
@@ -638,6 +671,7 @@ if __name__ == '__main__':
         part = [add.constructor, add.selector_generator, add.selector, add.fallback_impl, add.funs_impl, add.cbor]
         return [contract, list(map(lambda x: x.bytecode, part))]
 
+
     def add_unit_test(contract: str):
         unit_test = get_unit_test(contract)
         try:
@@ -650,6 +684,7 @@ if __name__ == '__main__':
             with open('dividerUnitTest.txt', 'w', encoding='utf8') as f:
                 f.write(json.dumps([unit_test]))
 
+
     def test_divider() -> bool:
         cons = True
         try:
@@ -659,10 +694,12 @@ if __name__ == '__main__':
             print("单元测试文件不存在或者单元测试数据出错")
         for contract, test_res in unit_tests:
             curr = Addition(contract)
-            part = [curr.constructor, curr.selector_generator, curr.selector, curr.fallback_impl, curr.funs_impl, curr.cbor]
+            part = [curr.constructor, curr.selector_generator, curr.selector, curr.fallback_impl, curr.funs_impl,
+                    curr.cbor]
             curr_res = list(map(lambda x: x.bytecode, part))
             cons = cons and curr_res == test_res
         return cons
+
 
     unknown_bytecode = '608060405234801561001057600080fd5b5060d48061001f6000396000f3fe608060405260043610601c5760003560e01c806312065fe014607f575b7f909c57d5c6ac08245cf2a6de3900e2b868513fa59099b92b27d8db823d92df9c5a60405190815260200160405180910390a160405162461bcd60e51b81526020600482015260016024820152606b60f81b604482015260640160405180910390fd5b348015608a57600080fd5b504760405190815260200160405180910390f3fea2646970667358221220145395ac7890445828b59945e9593ab8919952bb83ad366fc498e807b422da9864736f6c634300080b0033'
     add1_bytecode = '6080604052348015600f57600080fd5b50609c8061001e6000396000f300608060405260043610603e5763ffffffff7c0100000000000000000000000000000000000000000000000000000000600035041663a836572881146043575b600080fd5b348015604e57600080fd5b506058600435606a565b60408051918252519081900360200190f35b600101905600a165627a7a723058201b5930ac885210ff114b55848f959850c81886c515ec221eb475490f85e319a50029'

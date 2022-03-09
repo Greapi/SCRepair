@@ -125,7 +125,7 @@ def test_combine(file_folder: str, out=True):
                         if is_push(opcode) and Hex(len(operand) // 2) >= Hex('2'):  # 大于两个字节
                             continue
                         # 找到填充蹦床的起始位置 start
-                        min_trampoline_length = Hex('4')
+                        min_trampoline_length = Hex('5')
                         while True:
                             curr_length = add.funs_impl.blength_by_line(start, jump_num)
                             if add.funs_impl[start][1] == op.jumpdest:  # 碰到基本块代表没有足够的划分空间
@@ -133,7 +133,11 @@ def test_combine(file_folder: str, out=True):
                                     print('{} {}行 {}'.format(_file_path, i + 1, line[2:].strip()))
                                     add.funs_impl.print_by_line(start, jump_num)
                                 raise OverflowError('没有足够的空间')
-                            if curr_length >= min_trampoline_length:
+                            if (curr_length >= min_trampoline_length - Hex('1') and add.funs_impl[jump_num][
+                                1] == op.jump) or \
+                                    (curr_length >= min_trampoline_length - Hex('1') and add.funs_impl[jump_num + 1][
+                                        1] == op.jumpdest) or \
+                                    curr_length >= min_trampoline_length:
                                 break
                             start -= 1
                     counter_true += 1
@@ -172,13 +176,17 @@ def find_not_enough_block(_contract: str):
         if is_push(opcode) and Hex(len(operand) // 2) >= Hex('2'):  # 大于两个字节
             continue
         # 找到填充蹦床的起始位置 start
-        min_trampoline_length = Hex('4')
+        min_trampoline_length = Hex('5')
         while True:
             curr_length = add.funs_impl.blength_by_line(start, jump_num)
             if add.funs_impl[start][1] == op.jumpdest:  # 碰到基本块代表没有足够的划分空间
-                add.funs_impl.print_by_line(start, jump_num+1)
-                print('~~~~~~~~~~~~~~~~~')
-            if curr_length >= min_trampoline_length:
+                add.funs_impl.print_by_line(start, jump_num)
+                print('~~~~~~~~~~~~~~~~~~~')
+            if (curr_length >= min_trampoline_length - Hex('1') and add.funs_impl[jump_num][
+                1] == op.jump) or \
+                    (curr_length >= min_trampoline_length - Hex('1') and add.funs_impl[jump_num + 1][
+                        1] == op.jumpdest) or \
+                    curr_length >= min_trampoline_length:
                 break
             start -= 1
 
@@ -219,7 +227,7 @@ if __name__ == '__main__':
     # test_combine('valid_dataset', False)
 
     # 测试批量编译模块
-    update_compiled_contract()
+    # update_compiled_contract()
     # print(*read_compiled_contract(), sep='\n')
 
     # 测试实际存在的库合约
@@ -230,10 +238,10 @@ if __name__ == '__main__':
     # print(contract.functions.average(5, 7).call())
 
     # 找到所有空间不足的基本块
-    for name, abi, bytecode in read_compiled_contract():
-        print(name)
-        find_not_enough_block(bytecode)
-        print('---------------------')
+    # for name, abi, bytecode in read_compiled_contract():
+    #     print(name)
+    #     find_not_enough_block(bytecode)
+    #     print('---------------------')
 
     # 用于测试某个特定的合约
     # _constructor = '61017e610030600b82828239805160001a6073146000811461002057610022565bfe5b5030600052607381538281f300'
