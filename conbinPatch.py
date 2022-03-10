@@ -2,7 +2,7 @@ import os
 import json
 from evmdasm import EvmBytecode
 import math
-from utils import Hex, to_opcode
+from utils import Hex, to_opcode, print_formatted
 import opcodes as op
 import copy
 
@@ -20,6 +20,7 @@ def format_bytecode(bytecode) -> list:
         else:
             res.append((Hex(i // 2), curr_hex, ''))
         i += inc
+    assert(i == len(bytecode))
     return res
 
 
@@ -40,6 +41,7 @@ class FBytecode:
         self.bytecode = bytecode
         self.formatted_bytecode = format_bytecode(self.bytecode)
 
+    # 获得当前行所占字节数
     def _blength_of_line(self, line_num: int) -> Hex:
         default = 1
         curr = int(self.formatted_bytecode[line_num][1], 16)
@@ -74,6 +76,7 @@ class FBytecode:
         for start, end, trampoline in start_end_trampoline:
             start_h = self.formatted_bytecode[start][0]
             end_h = self.formatted_bytecode[end][0] + self._blength_of_line(end)
+            assert (end_h - start_h == trampoline.length)
             bytecode = bytecode[0:start_h.num * 2] + trampoline.bytecode + bytecode[end_h.num * 2::]
         return FBytecode(bytecode)
 
@@ -92,6 +95,10 @@ class FBytecode:
         bytecode = self.bytecode + other.bytecode
         return FBytecode(bytecode)
 
+    def insert(self, index_line: int, bytecode: str):
+        hex_pos: Hex = self.formatted_bytecode[index_line][0]
+        new_bytecode = self.bytecode[0:hex_pos.num * 2] + bytecode + self.bytecode[hex_pos.num * 2:]
+        self.update(new_bytecode)
 
 # 功能块
 class FunBlock(FBytecode):
@@ -179,7 +186,11 @@ class FallbackImpl(FunBlock):
 
 
 class FunsImpl(FunBlock):
-    pass
+    def have_jumpdest(self, start: int, end: int) -> bool:
+        for _, opcode, _ in self.formatted_bytecode[start:end + 1]:
+            if opcode == op.jumpdest:
+                return True
+        return False
 
 
 class SelectorRevise(FunBlock):
@@ -528,12 +539,12 @@ def push_generator(code: Hex, length=Hex('0')) -> str:
 def trampoline_generator(patch_target: Hex, trampoline_length: Hex, mode):
     # 减 Hex('2') -> push 和 jump 两字节
     if mode == 0 or mode == 1:
-        assert(trampoline_length >= Hex('3'))
+        assert (trampoline_length >= Hex('3'))
         trampoline_bytecode = push_generator(patch_target, trampoline_length - Hex('2')) + op.jump
     # 减 Hex('3') -> push, jump, jumpdest 三字节
     elif mode == 2:
-        assert(trampoline_length >= Hex('4'))
-        trampoline_bytecode = push_generator(patch_target, trampoline_length - Hex('3')) + '56' + '5b'
+        assert (trampoline_length >= Hex('4'))
+        trampoline_bytecode = push_generator(patch_target, trampoline_length - Hex('3')) + op.jump + op.jumpdest
     else:
         raise IndexError("此 mode 不存在")
     return Trampoline(trampoline_bytecode)
@@ -543,14 +554,27 @@ def trampoline_generator(patch_target: Hex, trampoline_length: Hex, mode):
 # @mode 为0, 对应情况0: 此跳转为 JUMP
 # @mode 为1, 对应情况1: 此跳转为 JUMPI 但下一行为 JUMPDEST
 # @mode 为2, 对应情况2: 此跳转为 JUMPI 且下一行不是 JUMPDEST
-def jump_patch_generator(replaced_code: FBytecode, offset: Hex, back_target: Hex, mode) -> FBytecode:
+def jump_patch_generator(replaced_code: FBytecode, offset: Hex, back_target: Hex, mode, mul_jump_code: FBytecode) -> FBytecode:
+    added_code = ''
+    if mul_jump_code is not None:
+        jumps = []
+        # 找到 jump(i) 所在行
+        for i, line in enumerate(mul_jump_code):
+            _, opcode, _ = line
+            if opcode == op.jump or opcode == op.jumpi:
+                jumps.append(i)
+        insert_bytecode = push_generator(offset) + op.add
+        _off = 0
+        for jump in jumps:
+            mul_jump_code.insert(_off + jump, insert_bytecode)
+            _off += 2
+        added_code = mul_jump_code.bytecode
+    added_code += push_generator(offset) + op.add
+    # patch = 被替换代码 + 新增代码 (+ 回位代码)
     if mode == 0:
-        patch = op.jumpdest + replaced_code.bytecode + push_generator(offset) + op.add + op.jump
-    elif mode == 1:
-        patch = op.jumpdest + replaced_code.bytecode + push_generator(offset) + op.add + op.jumpi + \
-                push_generator(back_target) + op.jump
-    elif mode == 2:
-        patch = op.jumpdest + replaced_code.bytecode + push_generator(offset) + op.add + op.jumpi + \
+        patch = op.jumpdest + replaced_code.bytecode + added_code + op.jump
+    elif mode == 1 or mode == 2:
+        patch = op.jumpdest + replaced_code.bytecode + added_code + op.jumpi + \
                 push_generator(back_target) + op.jump
     else:
         raise IndexError("此 mode 不存在")
@@ -569,61 +593,71 @@ def combine_bytecode(src: Source, add: Addition):
     jump_nums = list()
     for i, opcode in enumerate(add.funs_impl):
         if opcode[1] == op.jump or opcode[1] == op.jumpi:
-            jump_nums.append(i)
+            if len(jump_nums) > 0 and \
+                    (add.funs_impl.blength_by_line(jump_nums[-1][-1] + 1, i)) <= Hex('4') and \
+                    not add.funs_impl.have_jumpdest(jump_nums[-1][-1] + 1, i - 1):
+                jump_nums[-1].append(i)
+            else:
+                jump_nums.append([i])
     patch_target = src.middle.length + add.funs_impl.length
 
     # 修正新合约 funs_impl 中所有 jump(i)
     patch = Patch(patch_target)  # patch 类
     start_end_trampolines = []  # 蹦床的开始+结尾+蹦床本身
     for jump_num in jump_nums:
-        start = jump_num  # 替换 jump(i) 本身, 从当前行开始
         # 采用 CGF 的方案, 对 jump(i) 的上一行判断
-        opcode = add.funs_impl[jump_num - 1][1]
-        operand = add.funs_impl[jump_num - 1][2]
-        if is_push(opcode):
-            limited_length = Hex(len(operand) // 2)  # 新的target不能超过此字节数
-            # 以下所有类为 Hex 类
-            old_target = Hex(operand)
-            offset = src.middle.length - add.funs_impl.base
-            new_target = old_target + offset
-            # 判断新的跳转目标可否在不影响直接偏置的情况加入
-            if new_target.blength <= limited_length:
-                push_bytecode = push_generator(new_target, limited_length)
-                start_end_trampolines.append((jump_num - 1, jump_num - 1, Trampoline(push_bytecode)))
-                continue
-        # 找到填充蹦床的起始位置 start
+        if len(jump_num) == 1:  # 仅对无连续jump(i)采用 CFG 方案
+            opcode = add.funs_impl[jump_num[0] - 1][1]
+            operand = add.funs_impl[jump_num[0] - 1][2]
+            if is_push(opcode):
+                limited_length = Hex(len(operand) // 2)  # 新的target不能超过此字节数
+                # 以下所有类为 Hex 类
+                old_target = Hex(operand)
+                offset = src.middle.length - add.funs_impl.base
+                new_target = old_target + offset
+                # 判断新的跳转目标可否在不影响直接偏置的情况加入
+                if new_target.blength <= limited_length:
+                    push_bytecode = push_generator(new_target, limited_length)
+                    start_end_trampolines.append((jump_num[0] - 1, jump_num[0] - 1, Trampoline(push_bytecode)))
+                    continue
+        # 找到填充蹦床的起始位置(start)
+        start = jump_num[0]  # 替换 jump(i) 本身, 从当前行开始
         min_trampoline_length = patch_target.blength + Hex('3')
         while True:
-            curr_length = add.funs_impl.blength_by_line(start, jump_num)
+            curr_length = add.funs_impl.blength_by_line(start, jump_num[-1])
             if add.funs_impl[start][1] == op.jumpdest:  # 不能碰到基本块
-                add.funs_impl.print_by_line(start, jump_num)
+                add.funs_impl.print_by_line(start, jump_num[-1])
                 raise OverflowError("没有足够的空间")
             # 情况0: 当为修正的 JUMP 时, 可以少一字节, 因为无须为下一句代码设置 JUMPDEST
             # 情况1: 当为下一字节为 JUMPDEST 时, 可以少一字节, 因为跳转可以指向下一 JUMPDEST
             # 情况2: 正常修正, 蹦床带有 JUMPDEST
-            if (curr_length >= min_trampoline_length-Hex('1') and add.funs_impl[jump_num][1] == op.jump) or \
-                    (curr_length >= min_trampoline_length-Hex('1') and add.funs_impl[jump_num+1][1] == op.jumpdest) or \
-                        curr_length >= min_trampoline_length:
+            if (curr_length >= min_trampoline_length - Hex('1') and add.funs_impl[jump_num[-1]][1] == op.jump) or \
+                    (curr_length >= min_trampoline_length - Hex('1') and add.funs_impl[jump_num[-1] + 1][
+                        1] == op.jumpdest) or \
+                    curr_length >= min_trampoline_length:
                 break
             start -= 1
         # 修正当前 jump(i)
         # ⑴ 生成当前补丁
-        replaced_code = add.funs_impl.get_by_line(start, jump_num - 1)
+        replaced_code = add.funs_impl.get_by_line(start, jump_num[0] - 1)
         offset = src.middle.length - add.funs_impl.base
         # 跳转回来的位置为 -> jump(i)位置的当前字节, 这里会预设 jumpdest
         # src.middle.length 是未来合并后 add.funs_impl 的新基址
-        if add.funs_impl[jump_num][1] == op.jump:  # 此时无须 back_target
+        if add.funs_impl[jump_num[-1]][1] == op.jump:  # 此时无须 back_target
             back_target = Hex('0')
             mode = 0
-        elif add.funs_impl[jump_num+1][1] == op.jumpdest:
-            back_target = add.funs_impl[jump_num+1][0] + src.middle.length
+        elif add.funs_impl[jump_num[-1] + 1][1] == op.jumpdest:
+            back_target = add.funs_impl[jump_num[-1]+1][0] + src.middle.length
             mode = 1
         else:
-            back_target = add.funs_impl[jump_num][0] + src.middle.length
+            back_target = add.funs_impl[jump_num[-1]][0] + src.middle.length
             mode = 2
-        patch_curr = jump_patch_generator(replaced_code, offset, back_target, mode)
+        mul_jump = None
+        if len(jump_num) > 1:
+            mul_jump = add.funs_impl.get_by_line(jump_num[0], jump_num[-1]-1)  # 最后一个 jump(i) 不取, 因为在 mode 中会添加
+        patch_curr = jump_patch_generator(replaced_code, offset, back_target, mode, mul_jump)
         # ⑵ 生成蹦床
-        start_end_trampolines.append((start, jump_num, trampoline_generator(patch_target, curr_length, mode)))
+        start_end_trampolines.append((start, jump_num[-1], trampoline_generator(patch_target, curr_length, mode)))
         # ⑶ 生成补丁
         patch_target += patch_curr.length
         patch += patch_curr

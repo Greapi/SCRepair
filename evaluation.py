@@ -227,15 +227,14 @@ if __name__ == '__main__':
     # test_combine('valid_dataset', False)
 
     # 测试批量编译模块
-    # update_compiled_contract()
+    update_compiled_contract()
     # print(*read_compiled_contract(), sep='\n')
 
     # 测试实际存在的库合约
-    # res = combine_by_index([13, 14], read_compiled_contract())
-    # contractAddress = deploy(*res)
-    # contract = web3.eth.contract(address=contractAddress, abi=res[0])
-    # print(contract.functions.tryAdd(2, 3).call())
-    # print(contract.functions.average(5, 7).call())
+    res = combine_by_index([1, 2], read_compiled_contract())
+    contractAddress = deploy(*res)
+    contract = web3.eth.contract(address=contractAddress, abi=res[0])
+    print(contract.functions.decode('Qw==').call())
 
     # 找到所有空间不足的基本块
     # for name, abi, bytecode in read_compiled_contract():

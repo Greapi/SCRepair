@@ -2,6 +2,7 @@
 from evmdasm import EvmBytecode
 import math
 
+
 class Hex:
     def __init__(self, num):
         if type(num) == int:
@@ -15,7 +16,7 @@ class Hex:
 
     @property
     def blength(self):
-        return Hex(math.ceil(len(self.hex_str)/2))  # 字符长度
+        return Hex(math.ceil(len(self.hex_str) / 2))  # 字符长度
 
     def __add__(self, other):
         return Hex(hex(self.num + other.num))
@@ -53,6 +54,7 @@ class Hex:
     def s(self) -> str:
         return self.hex_str.replace('0x', '')
 
+
 # 将 bytecode 转化为 opcode 并编号
 def to_opcode(bytecode: str, base=Hex('0')):
     opcode = ''
@@ -73,3 +75,11 @@ def to_opcode(bytecode: str, base=Hex('0')):
         # opcode += '{}\n'.format(op)
         i += inc
     return opcode
+
+
+def print_formatted(block) -> str:
+    s = ''
+    for i, opcode in enumerate(block):
+        op = EvmBytecode(opcode[1]+opcode[2]).disassemble().as_string
+        s += '{} {} {}\n'.format(i, opcode[0], op)
+    return s
