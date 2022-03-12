@@ -50,6 +50,9 @@ class Hex:
         self.hex_str = hex(self.num).replace('0x', '')
         return self
 
+    def __hash__(self):
+        return hash(self.num)
+
     @property
     def s(self) -> str:
         return self.hex_str.replace('0x', '')

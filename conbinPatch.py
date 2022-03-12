@@ -104,7 +104,7 @@ class FBytecode:
 class FunBlock(FBytecode):
     def __init__(self, bytecode='', base=Hex('0')):
         super().__init__(bytecode)
-        self.base = copy.deepcopy(base)  # 深拷贝
+        self.base = copy.deepcopy(base)  # 深拷贝, 不算 constructor
 
     def update_funBlock(self, bytecode: str, base: Hex):
         super(FunBlock, self).update(bytecode)
@@ -113,6 +113,15 @@ class FunBlock(FBytecode):
     def replace_by_line_generator(self, start_end_trampoline: list):
         fBytecode = super(FunBlock, self).replace_by_line_generator(start_end_trampoline)
         return FunBlock(fBytecode.bytecode, self.base)
+
+    # 返回一个: 地址 -> 行号: int
+    @property
+    def address_lineNum(self) -> dict:
+        res_dict = dict()
+        for i, line in enumerate(self.formatted_bytecode):
+            target, _, _ = line
+            res_dict[target] = i
+        return res_dict
 
 
 class Constructor(FBytecode):
@@ -301,6 +310,8 @@ class Source(FBytecode):
         self.selector_revise = SelectorRevise()
         self.cbor = CBOR()
 
+        self.addition_target = None  # 为了方便后续的等价性测试
+
     @property
     def formatted_bytecode(self):
         fun_blocks = [self.constructor, self.selector_generator, self.selector_trampoline,
@@ -365,6 +376,12 @@ class Source(FBytecode):
         s += "Metadata 共 {} 字节: {}".format(self.cbor.length, self.cbor.bytecode)
         return s
 
+    # FunBlock 的 base 需相对于 source, 这才能保证跳转的正确性
+    def get_curr_add(self) -> FunBlock:
+        assert (self.addition_target is not None)
+        fun_impl_bytecode = self.funs_impl.bytecode
+        add_bytecode = fun_impl_bytecode[self.addition_target.num*2:]
+        return FunBlock(add_bytecode, self.funs_impl.base)
 
 class Addition(FBytecode):
     def __init__(self, contract: str):
@@ -480,7 +497,7 @@ class Addition(FBytecode):
         base += self.selector.length
         self.fallback_impl = FallbackImpl(bc[fallback_impl[0]:fallback_impl[1]], base)
         base += self.fallback_impl.length
-        self.funs_impl = FunsImpl(bc[funs_impl[0]:funs_impl[1]], base)
+        self.funs_impl = FunsImpl(bc[funs_impl[0]:funs_impl[1]], base)  # TOD 在实现末尾有一节 .byte 的代码
         base += self.funs_impl.length
         self.cbor = CBOR(bc[cbor[0]:cbor[1]], base)
 
@@ -554,7 +571,8 @@ def trampoline_generator(patch_target: Hex, trampoline_length: Hex, mode):
 # @mode 为0, 对应情况0: 此跳转为 JUMP
 # @mode 为1, 对应情况1: 此跳转为 JUMPI 但下一行为 JUMPDEST
 # @mode 为2, 对应情况2: 此跳转为 JUMPI 且下一行不是 JUMPDEST
-def jump_patch_generator(replaced_code: FBytecode, offset: Hex, back_target: Hex, mode, mul_jump_code: FBytecode) -> FBytecode:
+def jump_patch_generator(replaced_code: FBytecode, offset: Hex, back_target: Hex, mode,
+                         mul_jump_code: FBytecode) -> FBytecode:
     added_code = ''
     if mul_jump_code is not None:
         jumps = []
@@ -589,6 +607,8 @@ def is_push(opcode: str) -> bool:
 
 # 合并字节码
 def combine_bytecode(src: Source, add: Addition):
+    # 方便提取出添加的 add 部分
+    src.addition_target = src.funs_impl.length
     # 找到新合约 funs_impl 中所有 jump(i) 的行号
     jump_nums = list()
     for i, opcode in enumerate(add.funs_impl):
@@ -647,14 +667,14 @@ def combine_bytecode(src: Source, add: Addition):
             back_target = Hex('0')
             mode = 0
         elif add.funs_impl[jump_num[-1] + 1][1] == op.jumpdest:
-            back_target = add.funs_impl[jump_num[-1]+1][0] + src.middle.length
+            back_target = add.funs_impl[jump_num[-1] + 1][0] + src.middle.length
             mode = 1
         else:
             back_target = add.funs_impl[jump_num[-1]][0] + src.middle.length
             mode = 2
         mul_jump = None
         if len(jump_num) > 1:
-            mul_jump = add.funs_impl.get_by_line(jump_num[0], jump_num[-1]-1)  # 最后一个 jump(i) 不取, 因为在 mode 中会添加
+            mul_jump = add.funs_impl.get_by_line(jump_num[0], jump_num[-1] - 1)  # 最后一个 jump(i) 不取, 因为在 mode 中会添加
         patch_curr = jump_patch_generator(replaced_code, offset, back_target, mode, mul_jump)
         # ⑵ 生成蹦床
         start_end_trampolines.append((start, jump_num[-1], trampoline_generator(patch_target, curr_length, mode)))
@@ -699,6 +719,101 @@ def addition_to_source(add: Addition) -> Source:
     return copy.deepcopy(src)
 
 
+# 1. 提取 src 中与 add 相对应的 fun_impl 代码
+# 2. 按行依次比较字节码是否相等, 但是要忽略三种不相等 ⑴进入补丁(push,jump) ⑵出去补丁的(push,jump,(jumpdest) ⑶补丁新增的代码(push,add)
+# 3. 当进入补丁与出去补丁时的 jump 执行其跳转功能, 其余的 jump(i) 不实行
+# 4. 终止条件为 add 执行到末尾, 此时返回 True; 否则在执行中一旦发现不同之处, 便返回 False 与 错误的具体位置
+def test_equivalence(src: Source, add: Addition) -> bool:
+    def is_op_equal(a: list, b: list) -> bool:
+        return (a[1] == b[1]) & (a[2] == b[2])
+
+    # TOD 总结, 内联函数可使用外置申请的参数
+    def have_little_look(_p: int, _q: int, length=3):
+        counter = 0
+        first = True
+        while counter < length:
+            if not is_op_equal(addSrc_impl_code[_p], add_impl_code[_q]):
+                if first:
+                    print("~~~~~~~跳转中中不同之处~~~~~~")
+                print("---------修正代码---------")
+                addSrc_funs_impl.print_by_line(_p, _p)
+                print("----------源代码----------")
+                add_funs_impl.print_by_line(_q, _q)
+                print("~~~~~~~~~~~~~~~~~~~~~~~~~")
+            counter += 1
+        if not first:
+            print()
+
+    addSrc_funs_impl = src.get_curr_add()
+    add_funs_impl = add.funs_impl
+    addSrc_impl_code = addSrc_funs_impl.formatted_bytecode
+    add_impl_code = add_funs_impl.formatted_bytecode
+    # 以下结构辅助用于跳转
+    jump_helper1 = addSrc_funs_impl.address_lineNum
+    jump_helper2 = add_funs_impl.address_lineNum
+    base1 = src.addition_target + src.funs_impl.base
+    base2 = add.funs_impl.base
+
+    # 开始依次比较字节码的等价性
+    p = q = 0  # p, q 分别指向 addSrc, add
+    is_in_patch = False
+    back_line = 0
+    while q < len(add_impl_code):
+        # 退出补丁
+        # 条件 ⑴ 处于进入补丁状态 ⑵ 补丁结束条件1, 指针刚好溢出一个位置(最后一个补丁) ⑶ 补丁结束条件2, 指向jumpdest, 下一个补丁开头
+        if is_in_patch and (p == len(addSrc_impl_code) or addSrc_impl_code[p][1] == op.jumpdest):
+            assert (back_line != 0)
+            p = back_line
+            is_in_patch = False
+        # 不相等的话, 判以下是否是需要排除的情况
+        if not is_op_equal(addSrc_impl_code[p], add_impl_code[q]):
+            # 可能可能是 CFG 修正
+            # 条件 ⑴ 同样的 push ⑵ 下一行代码相等
+            if is_push(addSrc_impl_code[p][1]) and addSrc_impl_code[p][1] == add_impl_code[q][1] and \
+                    addSrc_impl_code[p + 1][1] == add_impl_code[q + 1][1]:
+                p += 1
+                q += 1
+                # 悄悄比较一下跳转后是否相等
+                target1 = jump_helper1[Hex(addSrc_impl_code[p-1][2]) - base1] + 1
+                target2 = jump_helper2[Hex(add_impl_code[q-1][2]) - base2] + 1
+                have_little_look(target1, target2)
+                continue
+            # 能在进入补丁, 首先尝试进入进入跳转
+            # 条件 ⑴ addSrc 是 push ⑵ addSrc 下一行代码是 jump ⑶ addSrc 和 add 此字节不能一样（和 CFG 情况分离）
+            elif is_push(addSrc_impl_code[p][1]) and addSrc_impl_code[p+1][1] == op.jump and \
+                    addSrc_impl_code[p][1] != add_impl_code[q][1]:
+                back_line = p + 2
+                target = Hex(addSrc_impl_code[p][2])
+                target_line = jump_helper1[target - base1]
+                p = target_line + 1  # 跳过 jumpdest
+                is_in_patch = True
+                continue
+            # 判断是否是 add 的补丁
+            # 条件 ⑴ 此行代码是 push ⑵ 下一行代码是 op.add
+            elif is_push(addSrc_impl_code[p][1]) and addSrc_impl_code[p+1][1] == op.add:
+                p += 2
+                continue
+            else:  # 真的就是不相等
+                print("---------修正代码---------")
+                addSrc_funs_impl.print_by_line(p-1, p+1)
+                print("----------源代码----------")
+                add_funs_impl.print_by_line(q - 1, q + 1)
+                print("-------------------------")
+                return False
+
+        # 补丁中的跳转, 悄悄比较下跳转后的地址是否相等
+        # 条件 ⑴ 当前代码为 jump(i) ⑵ addSrc 的上3行为 push 上两行为 push, 上一行为 add, 代表在加偏置且可计算
+        if (addSrc_impl_code[p][1] == op.jump or addSrc_impl_code[p][1] == op.jumpi) and \
+                is_push(addSrc_impl_code[p-3][1]) and is_push(addSrc_impl_code[p-2][1]) and addSrc_impl_code[p-1][1] == op.add:
+            target1 = jump_helper1[Hex(addSrc_impl_code[p - 3][2]) - base1 + Hex(addSrc_impl_code[p - 2][2])] + 1
+            target2 = jump_helper2[Hex(add_impl_code[q - 1][2]) - base2] + 1
+            have_little_look(target1, target2)
+        p += 1
+        q += 1
+
+    return True
+
+
 if __name__ == '__main__':
     def get_unit_test(contract: str) -> list:
         add = Addition(contract)
@@ -740,5 +855,15 @@ if __name__ == '__main__':
     double_bytecode = '6080604052348015600f57600080fd5b50609c8061001e6000396000f300608060405260043610603e5763ffffffff7c0100000000000000000000000000000000000000000000000000000000600035041663eee9720681146043575b600080fd5b348015604e57600080fd5b506058600435606a565b60408051918252519081900360200190f35b600202905600a165627a7a72305820f3a6ecd64c261907682d5ce13a40341199a16032194121592a8017e6692158de0029'
     fibonacci_bytecode = '608060405234801561001057600080fd5b5060d88061001f6000396000f300608060405260043610603e5763ffffffff7c0100000000000000000000000000000000000000000000000000000000600035041663421ec76581146043575b600080fd5b348015604e57600080fd5b50605b600435602435606d565b60408051918252519081900360200190f35b6000811515607b57508160a6565b8160011415608c57506001820160a6565b60978360028403606d565b60a28460018503606d565b0190505b929150505600a165627a7a72305820924e3776cadabeb78157c4953a03fef645eca8938de0cd5d40b5cdb2b23c24410029'
     receive_bytecode = '61017e610030600b82828239805160001a6073146000811461002057610022565bfe5b5030600052607381538281f3006080604052600436106100435760003560e01c80633ccfd60b1461004f5780638da5cb5b1461006657806391fb54ca14610092578063f2fde38b146100b257600080fd5b3661004a57005b600080fd5b34801561005b57600080fd5b506100646100d2565b005b34801561007257600080fd5b50600054604080516001600160a01b039092168252519081900360200190f35b34801561009e57600080fd5b506100646100ad3660046103ad565b610142565b3480156100be57600080fd5b506100646100cd36600461038b565b610285565b6000546001600160a01b031633146101055760405162461bcd60e51b81526004016100fc90610479565b60405180910390fd5b600080546040516001600160a01b03909116914780156108fc02929091818181858888f1935050505015801561013f573d6000803e3d6000fd5b50565b6000546001600160a01b0316331461016c5760405162461bcd60e51b81526004016100fc90610479565b8051806101b25760405162461bcd60e51b81526020600482015260146024820152731059191c995cdcd95cc81b9bdd081c185cdcd95960621b60448201526064016100fc565b47806102005760405162461bcd60e51b815260206004820152601860248201527f5a65726f2062616c616e636520696e20636f6e7472616374000000000000000060448201526064016100fc565b600061020c83836104ae565b905060005b8381101561027e5784818151811061022b5761022b6104f9565b60200260200101516001600160a01b03166108fc839081150290604051600060405180830381858888f1935050505015801561026b573d6000803e3d6000fd5b5080610276816104d0565b915050610211565b5050505050565b6000546001600160a01b031633146102af5760405162461bcd60e51b81526004016100fc90610479565b6001600160a01b0381166103145760405162461bcd60e51b815260206004820152602660248201527f4f776e61626c653a206e6577206f776e657220697320746865207a65726f206160448201526564647265737360d01b60648201526084016100fc565b600080546040516001600160a01b03808516939216917f8be0079c531659141344cd1fd0a4f28419497f9722a3daafe3b4186f6b6457e091a3600080546001600160a01b0319166001600160a01b0392909216919091179055565b80356001600160a01b038116811461038657600080fd5b919050565b60006020828403121561039d57600080fd5b6103a68261036f565b9392505050565b600060208083850312156103c057600080fd5b823567ffffffffffffffff808211156103d857600080fd5b818501915085601f8301126103ec57600080fd5b8135818111156103fe576103fe61050f565b8060051b604051601f19603f830116810181811085821117156104235761042361050f565b604052828152858101935084860182860187018a101561044257600080fd5b600095505b8386101561046c576104588161036f565b855260019590950194938601938601610447565b5098975050505050505050565b6020808252818101527f4f776e61626c653a2063616c6c6572206973206e6f7420746865206f776e6572604082015260600190565b6000826104cb57634e487b7160e01b600052601260045260246000fd5b500490565b60006000198214156104f257634e487b7160e01b600052601160045260246000fd5b5060010190565b634e487b7160e01b600052603260045260246000fd5b634e487b7160e01b600052604160045260246000fdfea2646970667358221220594ba90ab1a8938f3f895b587b8a56160dd82a85f8823b4a95e1b9aec4a8a17964736f6c63430008070033'
+    BasicMathLib_1_0425 = '61011e610030600b82828239805160001a6073146000811461002057610022565bfe5b5030600052607381538281f3007300000000000000000000000000000000000000003014608060405260043610605f5763ffffffff7c01000000000000000000000000000000000000000000000000000000006000350416631d3b9edf81146064578063e39bbf6814608b575b600080fd5b60706004356024356097565b60408051921515835260208301919091528051918290030190f35b607060043560243560be565b60008282028215838204851417801560ad5760b6565b60019250600091505b509250929050565b600080808315801560d557600193506000925060e9565b604051858704602090910181905292508291505b505092509290505600a165627a7a72305820c9bd59df95a25fbb54d11f0274e5bf311273c1ee09f40d24c5c25f32453098ac0029'
+    BasicMathLib_2_0425 = '61010d610030600b82828239805160001a6073146000811461002057610022565bfe5b5030600052607381538281f3007300000000000000000000000000000000000000003014608060405260043610605f5763ffffffff7c010000000000000000000000000000000000000000000000000000000060003504166366098d4f81146064578063f4f3bdc114608b575b600080fd5b60706004356024356097565b60408051921515835260208301919091528051918290030190f35b607060043560243560c3565b600082820182810384148382118285141716801560b25760bb565b60019250600091505b509250929050565b600081830380830184148482108286141716600114801560b25760bb5600a165627a7a72305820b7904782a0adc4afaeb0af37106bd6780e89c5e34c2bebd65b7df2332448f18b0029'
 
-    print(test_divider())
+    # 单元测试 - 划分模块
+    # print(test_divider())
+
+    # 等价性测试 - 合并模块
+    source_temp = Addition(BasicMathLib_1_0425)
+    source = addition_to_source(source_temp)
+    addition = Addition(BasicMathLib_2_0425)
+    source = combine_bytecode(source, addition)
+    print(test_equivalence(source, addition))

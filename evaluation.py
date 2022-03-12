@@ -1,4 +1,4 @@
-from conbinPatch import Addition
+from conbinPatch import Addition, addition_to_source, combine_bytecode, test_equivalence
 from utils import Hex, to_opcode
 import os
 import csv
@@ -231,10 +231,18 @@ if __name__ == '__main__':
     # print(*read_compiled_contract(), sep='\n')
 
     # 测试实际存在的库合约
-    res = combine_by_index([1, 2], read_compiled_contract())
+    res = combine_by_index([2, 1], read_compiled_contract())
     contractAddress = deploy(*res)
     contract = web3.eth.contract(address=contractAddress, abi=res[0])
     print(contract.functions.decode('Qw==').call())
+
+    # 验证base64等价性
+    # lib = read_compiled_contract()
+    # source_temp = Addition(lib[2][2])
+    # source = addition_to_source(source_temp)
+    # addition = Addition(lib[1][2])
+    # source = combine_bytecode(source, addition)
+    # print(test_equivalence(source, addition))
 
     # 找到所有空间不足的基本块
     # for name, abi, bytecode in read_compiled_contract():
