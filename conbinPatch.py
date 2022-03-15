@@ -7,7 +7,7 @@ import opcodes as op
 import copy
 
 
-def format_bytecode(bytecode) -> list:
+def format_bytecode(bytecode, is_temp=False) -> list:
     i = 0
     res = list()  # (行号) - 字节位置 - 操作码 - 操作数
     while i < len(bytecode):
@@ -20,7 +20,8 @@ def format_bytecode(bytecode) -> list:
         else:
             res.append((Hex(i // 2), curr_hex, ''))
         i += inc
-    assert(i == len(bytecode))
+    if not is_temp:
+        assert (i == len(bytecode))
     return res
 
 
@@ -28,7 +29,10 @@ def format_bytecode(bytecode) -> list:
 class FBytecode:
     def __init__(self, bytecode=''):
         self.bytecode = bytecode
-        self.formatted_bytecode = format_bytecode(self.bytecode)
+
+    @property
+    def formatted_bytecode(self):
+        return format_bytecode(self.bytecode)
 
     @property
     def length(self):
@@ -39,7 +43,6 @@ class FBytecode:
 
     def update(self, bytecode):
         self.bytecode = bytecode
-        self.formatted_bytecode = format_bytecode(self.bytecode)
 
     # 获得当前行所占字节数
     def _blength_of_line(self, line_num: int) -> Hex:
@@ -100,6 +103,13 @@ class FBytecode:
         new_bytecode = self.bytecode[0:hex_pos.num * 2] + bytecode + self.bytecode[hex_pos.num * 2:]
         self.update(new_bytecode)
 
+    # 以行进行替换
+    def __setitem__(self, key: int, value: str):
+        start_num = self.formatted_bytecode[key][0].num * 2
+        end_num = self.formatted_bytecode[key + 1][0].num * 2
+        self.bytecode = self.bytecode[:start_num] + value + self.bytecode[end_num:]
+
+
 # 功能块
 class FunBlock(FBytecode):
     def __init__(self, bytecode='', base=Hex('0')):
@@ -124,7 +134,17 @@ class FunBlock(FBytecode):
         return res_dict
 
 
-class Constructor(FBytecode):
+class Data:
+    def __init__(self, bytecode='', base=Hex('0')):
+        self.bytecode = bytecode
+        self.base = base
+
+    @property
+    def length(self) -> Hex:
+        return Hex(len(self.bytecode) // 2)
+
+
+class Constructor(FunBlock):
     pass
 
 
@@ -179,6 +199,7 @@ class Selector(FunBlock):
         super().__init__(bytecode, base)
         self.formatted_selector = self._format_selector()  # [[签名, 跳转目标]]
 
+    # 固定将 selector 以dup1 push4 eq push jumpi 输出
     def update_selector_offset(self, offset: Hex):
         bytecode = ''
         for i in range(len(self.formatted_selector)):
@@ -194,15 +215,108 @@ class FallbackImpl(FunBlock):
     pass
 
 
-class FunsImpl(FunBlock):
+class FunsImpl:
+    def __init__(self, bytecode='', base=Hex('0')):
+        self.base = copy.deepcopy(base)
+        self.bytecode = bytecode
+        # offset-length-line, 其中offset是相对与FunsImpl内部的偏转, 也就是减去了偏转
+        self.data_info = self.codecopy_analysis()
+
+    # # 辅助函数, 用于有效的 offset 与 length
+    # # 注: 返回的 offset 是相对于本地偏移的
+    # def _get_end_bytecode(self, t1: str, t2: str) -> list[Hex] or None:
+    #     index1 = (Hex(t1) - self.base).num * 2
+    #     index2 = len(self.bytecode) - Hex(t2).num * 2
+    #     if index1 != index2:
+    #         index1 = (Hex(t2) - self.base).num * 2
+    #         index2 = len(self.bytecode) - Hex(t1).num * 2
+    #         if index1 != index2:
+    #             return None  # 不存在统一的结尾
+    #     return [Hex(t1)-self.base, Hex(t2)]
+
+    # 找到codecopy并提取offset, length, line
+    def find_codecopy(self) -> list[list[Hex, int]]:
+        off_len_line = list()  # 表示没有.byte部分
+        # 尝试通过 codecopy 找出 .byte
+        fb = format_bytecode(self.bytecode, True)
+        for i, line in enumerate(fb):
+            _, opcode, _ = line
+            if opcode == op.codecopy:
+                para1 = fb[i - 3]  # offset
+                para2 = fb[i - 2]  # length
+                if is_push(para1[1]) and is_push(para2[1]) and para1[2] != '' and para2[2] != '':  # 表示均为 push 且取值有意义
+                    off_len_line.append([Hex(para1[2]) - self.base, Hex(para2[2]), i])
+
+        off_len_line.sort(key=lambda x: x[0])  # 以 offset 进行排序
+
+        return off_len_line
+
+    # 分析所有的 codecopy, 以 offset, length, line(codecopy所在行) 输出
+    def codecopy_analysis(self) -> list[list[Hex, int]]:
+        # 分别以 t1 和 t2 作为 offset 与 length 获得codecopy指示的位置
+
+        off_len_line = self.find_codecopy()
+
+        if len(off_len_line) > 0:
+            # 找出最后一个字节
+            last_code_index = off_len_line[0][0].num * 2 - 2
+            last_bytecode = self.bytecode[last_code_index:last_code_index + 2]
+            # 确认是否找到 .byte 部分的开头, 确认是否找到.byte末尾
+            assert last_bytecode == op.invalid_fe or last_bytecode == op.stop, "没有找到.byte开头"
+            assert off_len_line[-1][0].num * 2 + off_len_line[-1][1].num * 2 == len(self.bytecode), "没有找到.byte末尾"
+            # 验证找到的.byte链接的合法性
+            i = 1
+            while i < len(off_len_line):
+                assert off_len_line[i - 1][0] + off_len_line[i - 1][1] == off_len_line[i][0], ".byte链接不合法"
+                i += 1
+        else:
+            off_len_line = [[self.length, Hex('0'), None]]
+
+        return off_len_line
+
+    @property
+    def code(self) -> FunBlock:
+        return FunBlock(self.bytecode[:self.data_info[0][0].num * 2], self.base)
+
+    @property
+    def data(self) -> Data:
+        return Data(self.bytecode[self.data_info[0][0].num * 2:], self.data_info[0][0])
+
+    @property
+    def length(self) -> Hex:
+        return Hex(len(self.bytecode) // 2)
+
+    def get_valid_bytecode(self):
+        return self.code.bytecode
+
     def have_jumpdest(self, start: int, end: int) -> bool:
-        for _, opcode, _ in self.formatted_bytecode[start:end + 1]:
+        for _, opcode, _ in self.code.formatted_bytecode[start:end + 1]:
             if opcode == op.jumpdest:
                 return True
         return False
 
+    def __str__(self):
+        s = self.code.__str__()
+        s += "\t.byte\n{}".format(self.data)
+        return s
+
+    # 以行进行替换
+    def replace_by_line(self, key: int, value: str):
+        start_num = self.code.formatted_bytecode[key][0].num * 2
+        end_num = self.code.formatted_bytecode[key + 1][0].num * 2
+        self.bytecode = self.bytecode[:start_num] + value + self.bytecode[end_num:]
+
+    def print_by_line(self, start: int, end: int):
+        s = ''
+        for i in range(start, end + 1):
+            line = self.code.formatted_bytecode[i]
+            s += '{} {} {}\n'.format(i, line[0],
+                                     EvmBytecode(line[1] + line[2]).disassemble().as_string)  # 行号 - 字节位置 - 操作数 - 操作码
+        print(s, end='')
+
 
 class SelectorRevise(FunBlock):
+    # sign_bytecode 选择器部分, push_bytecode 回位部分
     def __init__(self, bytecode='', base=Hex('0'), back_target=Hex('0')):
         super().__init__(bytecode, base)
         if back_target != Hex('0') and self.length > Hex('0'):
@@ -214,26 +328,19 @@ class SelectorRevise(FunBlock):
             self.sign_bytecode = ''
             self.push_bytecode = ''
 
+    # 因为在 SelectorRevise 末尾有回位代码, 因此添加时是在合并代码以前
     def add_selector(self, new_selector_bytecode: str):
         self.sign_bytecode += new_selector_bytecode
         bytecode = self.sign_bytecode + self.push_bytecode
         self.update_funBlock(bytecode, self.base)
 
 
-class CBOR:
-    def __init__(self, bytecode='', base=Hex('0')):
-        self.bytecode = bytecode
-        self.base = base
-
-    @property
-    def length(self) -> Hex:
-        return Hex(len(self.bytecode) // 2)
-
-
-class Middle(FBytecode):
-    def __init__(self, blocks: list):
+class Middle:
+    def __init__(self, blocks: list, addition_target=None):
+        assert (len(blocks) >= 4)
         self.blocks = blocks
-        super(Middle, self).__init__(self._get_bytecode_from_blocks())
+        self.bytecode = self._get_bytecode_from_blocks()
+        self.addition_target = None
 
     def _get_bytecode_from_blocks(self) -> str:
         s = ''
@@ -241,12 +348,19 @@ class Middle(FBytecode):
             s += block.bytecode
         return s
 
+    @property
+    def length(self) -> Hex:
+        return Hex(len(self.bytecode) // 2)
+
     def __str__(self):
         output = ''
         counter = 0
         for i, block in enumerate(self.blocks):
             output += '--------第{}部分--------\n'.format(i)
-            for line in block.formatted_bytecode:
+            curr_block = block if type(block) != FunsImpl else block.code
+            for line in curr_block.formatted_bytecode:
+                if type(block) == FunsImpl and self.addition_target is not None and line[0] == self.addition_target:
+                    output += '--------补丁---------\n'
                 # 行号 - 字节位置 - 操作数 - 操作码
                 output += '{} {} {}'.format(counter, line[0] + block.base,
                                             EvmBytecode(line[1] + line[2]).disassemble().as_string)
@@ -255,6 +369,7 @@ class Middle(FBytecode):
                 else:
                     output += '\n'
                 counter += 1
+            output += '' if type(block) != FunsImpl else '.byte\n{}'.format(block.data.bytecode)
         return output
 
 
@@ -300,7 +415,7 @@ class Patch:
         return output
 
 
-class Source(FBytecode):
+class Source:
     def __init__(self):
         self.constructor = Constructor()
         self.selector_generator = SelectorGenerator()
@@ -308,18 +423,9 @@ class Source(FBytecode):
         self.fallback_impl = FallbackImpl()
         self.funs_impl = FunsImpl()
         self.selector_revise = SelectorRevise()
-        self.cbor = CBOR()
+        self.cbor = Data()
 
         self.addition_target = None  # 为了方便后续的等价性测试
-
-    @property
-    def formatted_bytecode(self):
-        fun_blocks = [self.constructor, self.selector_generator, self.selector_trampoline,
-                      self.fallback_impl, self.funs_impl, self.selector_revise]  # 不包含 cbor
-        bytecode = ''
-        for fun_block in fun_blocks:
-            bytecode += fun_block.bytecode
-        return format_bytecode(bytecode)
 
     # 动态生成, 因为会不断变化
     @property
@@ -332,34 +438,43 @@ class Source(FBytecode):
         return bytecode
 
     @property
+    def formatted_bytecode(self):
+        blocks = [self.constructor, self.selector_generator, self.selector_trampoline,
+                  self.fallback_impl, self.funs_impl.code, self.selector_revise]  # 不包含 cbor
+        fb = []
+        for block in blocks:
+            for line in block:
+                target, opcode, operand = line
+                fb.append([target + block.base, opcode, operand])
+        return fb
+
+    @property
     def middle(self) -> Middle:
         middle_blocks = [self.selector_generator, self.selector_trampoline, self.fallback_impl, self.funs_impl]
-        bytecode = ''
-        for middle_block in middle_blocks:
-            bytecode += middle_block.bytecode
-        return Middle(middle_blocks)
+        return Middle(middle_blocks, self.addition_target)
 
     @property
     def middle_test(self) -> Middle:
         middle_blocks = [self.selector_generator, self.selector_trampoline, self.fallback_impl, self.funs_impl,
                          self.selector_revise]
-        bytecode = ''
-        for middle_block in middle_blocks:
-            bytecode += middle_block.bytecode
-        return Middle(middle_blocks)
+        return Middle(middle_blocks, self.addition_target)
 
-    def append_funs_impl(self, new_funs_impl: FunsImpl, patch: Patch):
-        def combine_funsImpl_patch(_funs_impl: FunsImpl, _patch: Patch) -> FBytecode:
-            return FBytecode(_funs_impl.bytecode + _patch.bytecode)
+    # ⑴ 进行对 fun_impl 的合并 ⑵ 更新 codecopy ⑶ 更新selector_revise的base
+    def append_funs_impl(self, code: FunBlock, data: Data, patch: Patch):
+        # 新bytecode = 代码 + 数据 + 补丁
+        self.funs_impl.bytecode = self.funs_impl.code.bytecode + code.bytecode + patch.bytecode + \
+                                  self.funs_impl.data.bytecode + data.bytecode
+        # 更新 codecopy
+        self.funs_impl.data_info = self.funs_impl.codecopy_analysis()
 
-        self.funs_impl += combine_funsImpl_patch(new_funs_impl, patch)  # 在 FBytecode 层面上的更新
-        self.selector_revise.base += (new_funs_impl + patch).length
+        # 更新selector_revise的base
+        self.selector_revise.base += code.length + patch.length + data.length
 
     def selector_revise_update(self, selector: Selector):
-        self.selector_revise.add_selector(selector.bytecode)
+        self.selector_revise.add_selector(selector.bytecode)  # 会更新 selector_revise 本身
         self.cbor.base += selector.length
 
-    def cbor_update(self, other: CBOR):
+    def cbor_update(self, other: Data):
         self.cbor.bytecode += other.bytecode
 
     def constructor_update(self):
@@ -371,26 +486,45 @@ class Source(FBytecode):
         bytecode = template[0] + push_length + template[1] + '00' + offset.s + template[2]
         self.constructor = Constructor(bytecode)
 
-    def __str__(self):
-        s = super(Source, self).__str__()
-        s += "Metadata 共 {} 字节: {}".format(self.cbor.length, self.cbor.bytecode)
-        return s
-
     # FunBlock 的 base 需相对于 source, 这才能保证跳转的正确性
     def get_curr_add(self) -> FunBlock:
         assert (self.addition_target is not None)
-        fun_impl_bytecode = self.funs_impl.bytecode
-        add_bytecode = fun_impl_bytecode[self.addition_target.num*2:]
+        fun_impl_bytecode = self.funs_impl.code.bytecode
+        add_bytecode = fun_impl_bytecode[self.addition_target.num * 2:]
         return FunBlock(add_bytecode, self.funs_impl.base)
 
-class Addition(FBytecode):
+    def __str__(self):
+        blocks = [self.constructor, self.selector_generator, self.selector_trampoline, self.fallback_impl,
+                  self.funs_impl, self.selector_revise]
+        output = ''
+        counter = 0
+        for i, block in enumerate(blocks):
+            output += '--------第{}部分--------\n'.format(i)
+            curr_block = block if type(block) != FunsImpl else block.code
+            for line in curr_block.formatted_bytecode:
+                if type(block) == FunsImpl and self.addition_target is not None and line[0] == self.addition_target:
+                    output += '--------补丁---------\n'
+                # 行号 - 字节位置 - 操作数 - 操作码
+                output += '{} {} {}'.format(counter, line[0] + block.base,
+                                            EvmBytecode(line[1] + line[2]).disassemble().as_string)
+                if line[1] == op.jump or line[1] == op.jumpi:
+                    output += ' <---\n'
+                else:
+                    output += '\n'
+                counter += 1
+            output += '' if type(block) != FunsImpl else '.byte\n{}'.format(block.data.bytecode+'\n')
+        output += ".Metadata 共 {} 字节\n{}".format(self.cbor.length, self.cbor.bytecode)
+        return output
+
+
+class Addition:
     def __init__(self, contract: str):
         self.constructor = Constructor()
         self.selector_generator = SelectorGenerator()
         self.selector = Selector()
         self.fallback_impl = FallbackImpl()
         self.funs_impl = FunsImpl()
-        self.cbor = CBOR()
+        self.cbor = Data()
 
         self._divider(contract)
 
@@ -474,7 +608,7 @@ class Addition(FBytecode):
                 fallback_impl = [i, min_target_index]
                 i = min_target_index
                 # 拆分 funs impl 和 CBOR, 利用 CBOR 的长度
-                cbor_ending_length = int(bc[-4::], 16) * 2 + 4  # 最后两个直接记录了CBOR的长度
+                cbor_ending_length = int(bc[-4::], 16) * 2 + 4  # 最后两个字节记录了CBOR的长度
                 funs_impl = [i, len(bc) - cbor_ending_length]
                 i = len(bc) - cbor_ending_length
                 cbor = [i, len(bc)]
@@ -497,9 +631,9 @@ class Addition(FBytecode):
         base += self.selector.length
         self.fallback_impl = FallbackImpl(bc[fallback_impl[0]:fallback_impl[1]], base)
         base += self.fallback_impl.length
-        self.funs_impl = FunsImpl(bc[funs_impl[0]:funs_impl[1]], base)  # TOD 在实现末尾有一节 .byte 的代码
+        self.funs_impl = FunsImpl(bc[funs_impl[0]:funs_impl[1]], base)
         base += self.funs_impl.length
-        self.cbor = CBOR(bc[cbor[0]:cbor[1]], base)
+        self.cbor = Data(bc[cbor[0]:cbor[1]], base)
 
     @property
     def bytecode(self) -> str:
@@ -512,24 +646,38 @@ class Addition(FBytecode):
 
     @property
     def formatted_bytecode(self):
-        fun_blocks = [self.constructor, self.selector_generator, self.selector, self.fallback_impl, self.funs_impl]
-        bytecode = ''
-        for fun_block in fun_blocks:
-            bytecode += fun_block.bytecode
-        return format_bytecode(bytecode)
+        blocks = [self.constructor, self.selector_generator, self.selector, self.fallback_impl, self.funs_impl.code]
+        fb = []
+        for block in blocks:
+            for line in block:
+                target, opcode, operand = line
+                fb.append([target + block.base, opcode, operand])
+        return fb
 
     @property
     def middle(self):
         middle_blocks = [self.selector_generator, self.selector, self.fallback_impl, self.funs_impl]
-        bytecode = ''
-        for middle_block in middle_blocks:
-            bytecode += middle_block.bytecode
         return Middle(middle_blocks)
 
     def __str__(self):
-        s = super(Addition, self).__str__()
-        s += "Metadata 共 {} 字节: {}".format(self.cbor.length, self.cbor.bytecode)
-        return s
+        blocks = [self.constructor, self.selector_generator, self.selector, self.fallback_impl, self.funs_impl]
+        output = ''
+        counter = 0
+        for i, block in enumerate(blocks):
+            output += '--------第{}部分--------\n'.format(i)
+            curr_block = block if type(block) != FunsImpl else block.code
+            for line in curr_block.formatted_bytecode:
+                # 行号 - 字节位置 - 操作数 - 操作码
+                output += '{} {} {}'.format(counter, line[0] + block.base,
+                                            EvmBytecode(line[1] + line[2]).disassemble().as_string)
+                if line[1] == op.jump or line[1] == op.jumpi:
+                    output += ' <---\n'
+                else:
+                    output += '\n'
+                counter += 1
+            output += '' if type(block) != FunsImpl else '.byte\n{}'.format(block.data.bytecode + '\n')
+        output += "\n.Metadata 共 {} 字节\n{}".format(self.cbor.length, self.cbor.bytecode)
+        return output
 
 
 class Trampoline(FBytecode):
@@ -608,18 +756,23 @@ def is_push(opcode: str) -> bool:
 # 合并字节码
 def combine_bytecode(src: Source, add: Addition):
     # 方便提取出添加的 add 部分
-    src.addition_target = src.funs_impl.length
+    src.addition_target = src.funs_impl.code.length
     # 找到新合约 funs_impl 中所有 jump(i) 的行号
     jump_nums = list()
-    for i, opcode in enumerate(add.funs_impl):
+    for i, opcode in enumerate(add.funs_impl.code):
         if opcode[1] == op.jump or opcode[1] == op.jumpi:
+            # 将相邻过近的jump(i)放在一起
             if len(jump_nums) > 0 and \
-                    (add.funs_impl.blength_by_line(jump_nums[-1][-1] + 1, i)) <= Hex('4') and \
+                    (add.funs_impl.code.blength_by_line(jump_nums[-1][-1] + 1, i)) <= Hex('4') and \
                     not add.funs_impl.have_jumpdest(jump_nums[-1][-1] + 1, i - 1):
                 jump_nums[-1].append(i)
             else:
                 jump_nums.append([i])
-    patch_target = src.middle.length + add.funs_impl.length
+    # 需要将 .byte 合并到末尾, 因此需要减去其长度
+    base_length = src.middle.length - src.funs_impl.data.length
+    code_length = add.funs_impl.code.length
+    patch_target = base_length + code_length
+    offset = (src.middle.length - src.funs_impl.data.length) - add.funs_impl.base  # - add.funs_impl.base 获得相对偏移
 
     # 修正新合约 funs_impl 中所有 jump(i)
     patch = Patch(patch_target)  # patch 类
@@ -627,13 +780,12 @@ def combine_bytecode(src: Source, add: Addition):
     for jump_num in jump_nums:
         # 采用 CGF 的方案, 对 jump(i) 的上一行判断
         if len(jump_num) == 1:  # 仅对无连续jump(i)采用 CFG 方案
-            opcode = add.funs_impl[jump_num[0] - 1][1]
-            operand = add.funs_impl[jump_num[0] - 1][2]
+            opcode = add.funs_impl.code[jump_num[0] - 1][1]
+            operand = add.funs_impl.code[jump_num[0] - 1][2]
             if is_push(opcode):
                 limited_length = Hex(len(operand) // 2)  # 新的target不能超过此字节数
                 # 以下所有类为 Hex 类
                 old_target = Hex(operand)
-                offset = src.middle.length - add.funs_impl.base
                 new_target = old_target + offset
                 # 判断新的跳转目标可否在不影响直接偏置的情况加入
                 if new_target.blength <= limited_length:
@@ -644,37 +796,37 @@ def combine_bytecode(src: Source, add: Addition):
         start = jump_num[0]  # 替换 jump(i) 本身, 从当前行开始
         min_trampoline_length = patch_target.blength + Hex('3')
         while True:
-            curr_length = add.funs_impl.blength_by_line(start, jump_num[-1])
-            if add.funs_impl[start][1] == op.jumpdest:  # 不能碰到基本块
-                add.funs_impl.print_by_line(start, jump_num[-1])
+            curr_length = add.funs_impl.code.blength_by_line(start, jump_num[-1])
+            if add.funs_impl.code[start][1] == op.jumpdest:  # 不能碰到基本块
+                add.funs_impl.code.print_by_line(start, jump_num[-1])
                 raise OverflowError("没有足够的空间")
             # 情况0: 当为修正的 JUMP 时, 可以少一字节, 因为无须为下一句代码设置 JUMPDEST
             # 情况1: 当为下一字节为 JUMPDEST 时, 可以少一字节, 因为跳转可以指向下一 JUMPDEST
             # 情况2: 正常修正, 蹦床带有 JUMPDEST
-            if (curr_length >= min_trampoline_length - Hex('1') and add.funs_impl[jump_num[-1]][1] == op.jump) or \
-                    (curr_length >= min_trampoline_length - Hex('1') and add.funs_impl[jump_num[-1] + 1][
+            if (curr_length >= min_trampoline_length - Hex('1') and add.funs_impl.code[jump_num[-1]][1] == op.jump) or \
+                    (curr_length >= min_trampoline_length - Hex('1') and add.funs_impl.code[jump_num[-1] + 1][
                         1] == op.jumpdest) or \
                     curr_length >= min_trampoline_length:
                 break
             start -= 1
         # 修正当前 jump(i)
         # ⑴ 生成当前补丁
-        replaced_code = add.funs_impl.get_by_line(start, jump_num[0] - 1)
-        offset = src.middle.length - add.funs_impl.base
+        replaced_code = add.funs_impl.code.get_by_line(start, jump_num[0] - 1)
         # 跳转回来的位置为 -> jump(i)位置的当前字节, 这里会预设 jumpdest
         # src.middle.length 是未来合并后 add.funs_impl 的新基址
-        if add.funs_impl[jump_num[-1]][1] == op.jump:  # 此时无须 back_target
+        if add.funs_impl.code[jump_num[-1]][1] == op.jump:  # 此时无须 back_target
             back_target = Hex('0')
             mode = 0
-        elif add.funs_impl[jump_num[-1] + 1][1] == op.jumpdest:
-            back_target = add.funs_impl[jump_num[-1] + 1][0] + src.middle.length
+        elif add.funs_impl.code[jump_num[-1] + 1][1] == op.jumpdest:
+            # back_target = 相对位置 + 加上基址
+            back_target = add.funs_impl.code[jump_num[-1] + 1][0] + base_length
             mode = 1
         else:
-            back_target = add.funs_impl[jump_num[-1]][0] + src.middle.length
+            back_target = add.funs_impl.code[jump_num[-1]][0] + base_length
             mode = 2
         mul_jump = None
         if len(jump_num) > 1:
-            mul_jump = add.funs_impl.get_by_line(jump_num[0], jump_num[-1] - 1)  # 最后一个 jump(i) 不取, 因为在 mode 中会添加
+            mul_jump = add.funs_impl.code.get_by_line(jump_num[0], jump_num[-1] - 1)  # 最后一个 jump(i) 不取, 因为在 mode 中会添加
         patch_curr = jump_patch_generator(replaced_code, offset, back_target, mode, mul_jump)
         # ⑵ 生成蹦床
         start_end_trampolines.append((start, jump_num[-1], trampoline_generator(patch_target, curr_length, mode)))
@@ -682,17 +834,41 @@ def combine_bytecode(src: Source, add: Addition):
         patch_target += patch_curr.length
         patch += patch_curr
 
+    # 在 patch 末尾写入总结代码
+    patch_end = FBytecode(op.invalid_fe)
+    patch_target += patch_end.length
+    patch += patch_end
+
     # 更新选择器与蹦床
     # 更新选择器
-    offset = src.middle.length - add.funs_impl.base
-    revised_selector = add.selector.update_selector_offset(offset)
+    revised_selector = add.selector.update_selector_offset(offset)  # 修正 selector 并以特定格式输出
     src.selector_revise_update(revised_selector)
     # 更新选择器蹦床蹦床
-    src.selector_trampoline.update_target(patch_target)
+    selector_trampoline_target = patch_target + src.funs_impl.data.length + add.funs_impl.data.length
+    src.selector_trampoline.update_target(selector_trampoline_target)
+
+    # 修正 codecopy, 包含两部分修正 src 和 add
+    # src 部分
+    data_target = patch_target
+    if src.funs_impl.data_info[0][2] is not None:
+        for _, length, line in src.funs_impl.data_info:
+            push_length = Hex(src.funs_impl.code[line - 3][1]) - Hex(op.push1) + Hex('1')  # 获得 push 所能承载的字节
+            assert data_target.blength <= push_length, "codecopy替换空间不足"
+            src.funs_impl.replace_by_line(line - 3, push_generator(data_target, push_length))
+            data_target += length
+
+    if add.funs_impl.data_info[0][2] is not None:
+        # add 部分
+        for _, length, line in add.funs_impl.data_info:
+            push_length = Hex(add.funs_impl.code[line - 3][1]) - Hex(op.push1) + Hex('1')  # 获得 push 所能承载的字节
+            assert data_target.blength <= push_length, "codecopy替换空间不足"
+            add.funs_impl.replace_by_line(line - 3, push_generator(data_target, push_length))
+            data_target += length
 
     # 修复 funs_impl 和 安装 jump_patch
-    revised_funs_impl = add.funs_impl.replace_by_line_generator(start_end_trampolines)
-    src.append_funs_impl(revised_funs_impl, patch)
+    revised_funs_impl_code = add.funs_impl.code.replace_by_line_generator(start_end_trampolines)
+    funs_impl_data = add.funs_impl.data
+    src.append_funs_impl(revised_funs_impl_code, funs_impl_data, patch)  # 除合并 funs_impl 外
 
     # 更新 CBOR
     src.cbor_update(add.cbor)
@@ -706,7 +882,7 @@ def combine_bytecode(src: Source, add: Addition):
 def addition_to_source(add: Addition) -> Source:
     src = Source()
     src.selector_generator = copy.deepcopy(add.selector_generator)
-    # 创建蹦床
+    # 创建选择器蹦床
     src.selector_trampoline = SelectorTrampoline(add.selector.bytecode, add.selector.base, add.middle.length)
     src.fallback_impl = copy.deepcopy(add.fallback_impl)
     src.funs_impl = copy.deepcopy(add.funs_impl)
@@ -727,7 +903,7 @@ def test_equivalence(src: Source, add: Addition) -> bool:
     def is_op_equal(a: list, b: list) -> bool:
         return (a[1] == b[1]) & (a[2] == b[2])
 
-    # TOD 总结, 内联函数可使用外置申请的参数
+    # ODO 总结, 内联函数可使用外置申请的参数
     def have_little_look(_p: int, _q: int, length=3):
         counter = 0
         first = True
@@ -736,21 +912,21 @@ def test_equivalence(src: Source, add: Addition) -> bool:
                 if first:
                     print("~~~~~~~跳转中中不同之处~~~~~~")
                 print("---------修正代码---------")
-                addSrc_funs_impl.print_by_line(_p, _p)
+                addSrc_funsImpl_code.print_by_line(_p, _p)
                 print("----------源代码----------")
-                add_funs_impl.print_by_line(_q, _q)
+                add_funsImpl_code.print_by_line(_q, _q)
                 print("~~~~~~~~~~~~~~~~~~~~~~~~~")
             counter += 1
         if not first:
             print()
 
-    addSrc_funs_impl = src.get_curr_add()
-    add_funs_impl = add.funs_impl
-    addSrc_impl_code = addSrc_funs_impl.formatted_bytecode
-    add_impl_code = add_funs_impl.formatted_bytecode
+    addSrc_funsImpl_code = src.get_curr_add()
+    add_funsImpl_code = add.funs_impl.code
+    addSrc_impl_code = addSrc_funsImpl_code.formatted_bytecode
+    add_impl_code = add_funsImpl_code.formatted_bytecode
     # 以下结构辅助用于跳转
-    jump_helper1 = addSrc_funs_impl.address_lineNum
-    jump_helper2 = add_funs_impl.address_lineNum
+    jump_helper1 = addSrc_funsImpl_code.address_lineNum
+    jump_helper2 = add_funsImpl_code.address_lineNum
     base1 = src.addition_target + src.funs_impl.base
     base2 = add.funs_impl.base
 
@@ -760,8 +936,8 @@ def test_equivalence(src: Source, add: Addition) -> bool:
     back_line = 0
     while q < len(add_impl_code):
         # 退出补丁
-        # 条件 ⑴ 处于进入补丁状态 ⑵ 补丁结束条件1, 指针刚好溢出一个位置(最后一个补丁) ⑶ 补丁结束条件2, 指向jumpdest, 下一个补丁开头
-        if is_in_patch and (p == len(addSrc_impl_code) or addSrc_impl_code[p][1] == op.jumpdest):
+        # 条件 ⑴ 处于进入补丁状态 ⑵ 补丁结束条件1, 出现终止字节码fe  ⑶ 补丁结束条件2, 指向jumpdest, 下一个补丁开头
+        if is_in_patch and (addSrc_impl_code[p][1] == op.invalid_fe or addSrc_impl_code[p][1] == op.jumpdest):
             assert (back_line != 0)
             p = back_line
             is_in_patch = False
@@ -774,13 +950,13 @@ def test_equivalence(src: Source, add: Addition) -> bool:
                 p += 1
                 q += 1
                 # 悄悄比较一下跳转后是否相等
-                target1 = jump_helper1[Hex(addSrc_impl_code[p-1][2]) - base1] + 1
-                target2 = jump_helper2[Hex(add_impl_code[q-1][2]) - base2] + 1
+                target1 = jump_helper1[Hex(addSrc_impl_code[p - 1][2]) - base1] + 1
+                target2 = jump_helper2[Hex(add_impl_code[q - 1][2]) - base2] + 1
                 have_little_look(target1, target2)
                 continue
             # 能在进入补丁, 首先尝试进入进入跳转
             # 条件 ⑴ addSrc 是 push ⑵ addSrc 下一行代码是 jump ⑶ addSrc 和 add 此字节不能一样（和 CFG 情况分离）
-            elif is_push(addSrc_impl_code[p][1]) and addSrc_impl_code[p+1][1] == op.jump and \
+            elif is_push(addSrc_impl_code[p][1]) and addSrc_impl_code[p + 1][1] == op.jump and \
                     addSrc_impl_code[p][1] != add_impl_code[q][1]:
                 back_line = p + 2
                 target = Hex(addSrc_impl_code[p][2])
@@ -790,21 +966,28 @@ def test_equivalence(src: Source, add: Addition) -> bool:
                 continue
             # 判断是否是 add 的补丁
             # 条件 ⑴ 此行代码是 push ⑵ 下一行代码是 op.add
-            elif is_push(addSrc_impl_code[p][1]) and addSrc_impl_code[p+1][1] == op.add:
+            elif is_push(addSrc_impl_code[p][1]) and addSrc_impl_code[p + 1][1] == op.add:
                 p += 2
                 continue
+            # 判断是否是 codecopy 修正
+            # 条件 ⑴ 此行与下行是 codecopy ⑵ 下3行是 codecopy
+            elif is_push(addSrc_impl_code[p][1]) and is_push(addSrc_impl_code[p + 1][1]) and \
+                    addSrc_impl_code[p + 3][1] == op.codecopy:
+                p += 3
+                q += 3
             else:  # 真的就是不相等
                 print("---------修正代码---------")
-                addSrc_funs_impl.print_by_line(p-1, p+1)
+                addSrc_funsImpl_code.print_by_line(p - 1, p + 1)
                 print("----------源代码----------")
-                add_funs_impl.print_by_line(q - 1, q + 1)
+                add_funsImpl_code.print_by_line(q - 1, q + 1)
                 print("-------------------------")
                 return False
 
         # 补丁中的跳转, 悄悄比较下跳转后的地址是否相等
         # 条件 ⑴ 当前代码为 jump(i) ⑵ addSrc 的上3行为 push 上两行为 push, 上一行为 add, 代表在加偏置且可计算
         if (addSrc_impl_code[p][1] == op.jump or addSrc_impl_code[p][1] == op.jumpi) and \
-                is_push(addSrc_impl_code[p-3][1]) and is_push(addSrc_impl_code[p-2][1]) and addSrc_impl_code[p-1][1] == op.add:
+                is_push(addSrc_impl_code[p - 3][1]) and is_push(addSrc_impl_code[p - 2][1]) and addSrc_impl_code[p - 1][
+            1] == op.add:
             target1 = jump_helper1[Hex(addSrc_impl_code[p - 3][2]) - base1 + Hex(addSrc_impl_code[p - 2][2])] + 1
             target2 = jump_helper2[Hex(add_impl_code[q - 1][2]) - base2] + 1
             have_little_look(target1, target2)
