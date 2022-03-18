@@ -1,3 +1,4 @@
+import copy
 import json
 from web3 import Web3
 from conbinPatch import Addition, addition_to_source, combine_bytecode
@@ -14,6 +15,7 @@ def deploy(abi, bytecode):
     return address
 
 def combine_by_index(ls: list, _abi_bytecode) -> tuple:
+    _abi_bytecode = copy.deepcopy(_abi_bytecode)
     abi = _abi_bytecode[ls[0]][1]  # 取出第一个 abi
     source_temp = Addition(_abi_bytecode[ls[0]][2])
     source = addition_to_source(source_temp)

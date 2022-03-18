@@ -1,3 +1,4 @@
+import random
 from conbinPatch import Addition, addition_to_source, combine_bytecode, test_equivalence
 from utils import Hex, to_opcode
 import os
@@ -6,6 +7,7 @@ import opcodes as op
 from solcx import compile_files
 import json
 from creatContract import combine_by_index, deploy, web3, abi_bytecode
+import base64
 
 def is_push(opcode: str) -> bool:
     opcode_dec = int(opcode, 16)
@@ -217,6 +219,158 @@ def read_compiled_contract() -> list:
     with open('compileContract.txt', 'r', encoding='utf8') as f:
         return json.loads(f.read())
 
+def rand_int(length_uint: list[int, bool]) -> int:
+    if length_uint[1]:
+        limitation_max = 2**length_uint[0] - 1
+        limitation_min = 0
+    else:
+        limitation_max = 2**(length_uint[0]-1) - 1
+        limitation_min = -2**(length_uint[0]-1)
+    return random.randint(limitation_min, limitation_max)
+
+def rand_str(length=20) -> str:
+    random_str = ''
+    base_str = 'ABCDEFGHIGKLMNOPQRSTUVWXYZabcdefghigklmnopqrstuvwxyz0123456789'
+    base_length = len(base_str) - 1
+    for i in range(length):
+        random_str += base_str[random.randint(0, base_length)]
+    return random_str
+
+def rand_byte(length=20) -> bytes:
+    return random.randbytes(length)
+
+def rand_base64(length=10) -> str:
+    r_str = rand_str(length)
+    bytes_r_str = r_str.encode("utf-8")
+    base64_r_str = base64.b64encode(bytes_r_str).decode()
+    return base64_r_str
+
+def rand_addr(length=40) -> str:
+    return '0xd2a5bC10698FD955D1Fe6cb468a17809A08fd005'
+
+def rand_bytes_array(length=(15, 5)) -> list[bytes]:
+    return [rand_byte(length[0]) for _ in range(length[1])]
+
+def rand_int_array(length_uint=(15, 5, True)) -> list[int]:
+    # length_uint[0::2] 取第一个和第三个参数
+    return [rand_int(length_uint[0::2]) for _ in range(length_uint[1])]
+
+def batch_test(combine_order: list, amount_per_fun=10):
+    # 根据 abi 生成分析结果
+    def analysis_abi(abi: list) -> list[list]:
+        analysis_res = []
+        for fun in abi:
+            fun_name = fun['name']
+            fun_inputs = list(map(lambda x: x['type'], fun['inputs']))
+            # 将参数和函数合并
+            analysis_res.append([fun_name, fun_inputs])
+        return analysis_res
+
+    # 根据函数名字与参数类型生成随机数
+    def generate_para(fun: list[str, list]) -> list:
+        type_func = {'int': rand_int, 'bytes': rand_byte, 'string': rand_str, 'base64': rand_base64,
+                     'address': rand_addr, 'bytes[]': rand_bytes_array, 'int[]': rand_int_array}
+        rand_params = []
+        default_length = 15
+        default_array_length = 5
+        name, params_type = fun
+        for param_type in params_type:
+            if 'int' in param_type:
+                # 对有符号与无符号整型的判断
+                is_uint = True if 'uint' in param_type else False
+                # 基本的对数组的判断
+                suffix = param_type.replace('uint', '') if is_uint else param_type.replace('int', '')
+                if '[]' in suffix:  # 是数组
+                    curr_type = 'int[]'
+                    suffix = suffix.replace('[]', '')
+                    params = [int(suffix), default_array_length, is_uint]
+                else:               # 不是数组
+                    curr_type = 'int'
+                    params = [int(suffix), is_uint]
+                # 特殊函数
+                if 'toHexString' in name:
+                    params[0] = 10
+            elif 'bytes' in param_type:
+                suffix = param_type.replace('bytes', '')
+                if '[]' in suffix:  # 是数组
+                    curr_type = 'bytes[]'
+                    suffix = suffix.replace('[]', '')
+                    params = [int(suffix), default_array_length] if suffix != '' else [default_length, default_array_length]
+                else:               # 不是数组
+                    curr_type = 'bytes'
+                    params = int(suffix) if suffix != '' else default_length
+            elif 'string' in param_type:
+                curr_type = param_type
+                params = default_length
+                if'decode' in name:
+                    curr_type = 'base64'
+                    params = default_length
+            elif 'address' in param_type:
+                curr_type = param_type
+                params = 40
+            else:
+                raise TypeError("未知类型 {}".format(param_type))
+            rand_params.append(type_func[curr_type].__call__(params))
+        return rand_params
+    # 部署合约
+    lib = read_compiled_contract()
+    # abi-字节
+    combine_abiBytecode = combine_by_index(combine_order, lib)
+    singles_abiBytecode = [[lib[i][1], lib[i][2]] for i in combine_order]
+    # 部署地址
+    combine_address = deploy(*combine_abiBytecode)
+    singles_address = list(map(lambda x: deploy(*x), singles_abiBytecode))
+    # 合约类
+    combine_contract = web3.eth.contract(address=combine_address, abi=combine_abiBytecode[0])
+    singles_addrAbi = list(zip(singles_address, map(lambda x: x[0], singles_abiBytecode)))
+    singles_contract = list(map(lambda x: web3.eth.contract(address=x[0], abi=x[1]), singles_addrAbi))
+
+    # ⑴ 遍历每一个单独的合约 ⑵ 构建随机的测试用例 ⑶ 分别对 com 和 single 测试, 并报告不同
+    differences = []
+    test_log = [['单例文件', '函数数目', '测试用例数目', '通过数目', '未通过数目']]
+    for i, single_contract in enumerate(singles_contract):
+        # 找出文件中所有函数, 其中每个函数结构 [函数名, [参数类型1, 参数类型2, ...]]
+        funs_info = analysis_abi(single_contract.abi)
+        file_name = lib[combine_order[i]][0]
+        not_pass = 0
+        for fun_info in funs_info:
+            count = 0
+            while count < amount_per_fun:
+                paras = generate_para(fun_info)
+                try:
+                    com_res = getattr(combine_contract.functions, fun_info[0])(*paras).call()
+                    sig_res = getattr(singles_contract[i].functions, fun_info[0])(*paras).call()
+                    if com_res != sig_res:
+                        # 名字-函数名-参数-com值-sig值
+                        differences.append([file_name, fun_info[0], paras, com_res, sig_res])
+                        not_pass += 1
+                except:
+                    try:
+                        sig_res = getattr(singles_contract[i].functions, fun_info[0])(*paras).call()
+                        differences.append([file_name, fun_info[0], paras, '无意义', sig_res])
+                        not_pass += 1
+                    except:
+                        continue
+                count += 1
+        test_amount = len(funs_info) * amount_per_fun
+        test_log.append([file_name, len(funs_info), test_amount, test_amount - not_pass, not_pass])
+
+    test_log.append(['total',
+                     sum(map(lambda x: x[1], test_log[1:])),
+                     sum(map(lambda x: x[2], test_log[1:])),
+                     sum(map(lambda x: x[3], test_log[1:])),
+                     sum(map(lambda x: x[4], test_log[1:]))])
+
+    if len(differences) > 0:
+        for difference in differences:
+            print("文件: {} 测试函数: {} 测试参数: {} 合并结果: {} 单例结果: {}".format(*difference))
+        print('-'*100)
+
+    for curr in test_log:
+        print("{:<40} {:<20} {:<20} {:<20} {:<20}".format(*curr))
+
+    return test_log
+
 
 if __name__ == '__main__':
     pass
@@ -228,19 +382,32 @@ if __name__ == '__main__':
 
     # 测试批量编译模块
     update_compiled_contract()
-    # print(*read_compiled_contract(), sep='\n')
+    # print(*[[i, con] for i, con in enumerate(read_compiled_contract())], sep='\n')
 
-    # 测试实际存在的库合约
-    res = combine_by_index([1, 2, 3, 4, 6, 7], read_compiled_contract())
-    contractAddress = deploy(*res)
-    # bytecode = '608060405234801561001057600080fd5b506103d9806100206000396000f30073000000000000000000000000000000000000000030146080604052600436106100355760003560e01c|68000000000000000356|565b600080fd5b61004d6100483660046101c9565b610063565b60405161005a919061027a565b60405180910390f35b606081516000141561008357505060408051602081019091526000815290565b600060405180606001604052806040815260200161035560409139905060006003845160026100b291906102cf565b6100bc91906102e7565b6100c7906004610309565b905060006100d68260206102cf565b67ffffffffffffffff8111156100ee576100ee61033e565b6040519080825280601f01601f191660200182016040528015610118576020820181803683370190505b509050818152600183018586518101602084015b81831015610184576003830192508251603f8160121c168501518253600182019150603f81600c1c168501518253600182019150603f8160061c168501518253600182019150603f811685015182535060010161012c565b60038951066001811461019e57600281146101af576101bb565b613d3d60f01b6001198301526101bb565b603d60f81b6000198301525b509398975050505050505050565b6000602082840312156101db57600080fd5b813567ffffffffffffffff808211156101f357600080fd5b818401915084601f83011261020757600080fd5b8135818111156102195761021961033e565b604051601f8201601f19908116603f011681019083821181831017156102415761024161033e565b8160405282815287602084870101111561025a57600080fd5b826020860160208301376000928101602001929092525095945050505050565b600060208083528351808285015260005b818110156102a75785810183015185820160400152820161028b565b818111156102b9576000604083870101525b50601f01601f1916929092016040019392505050565b600082198211156102e2576102e2610328565b500190565b60008261030457634e487b7160e01b600052601260045260246000fd5b500490565b600081600019048311821515161561032357610323610328565b500290565b634e487b7160e01b600052601160045260246000fd5b634e487b7160e01b600052604160045260246000fdfe|77|5b806312496a1b1461003a57603556a2646970667358221220f445f141227cd3210f57c2b91a0409e7af9909358857b0f676fa4929ab6fd44b64736f6c63430008070033'.replace('|', '')
-    # contractAddress = deploy(res[0], bytecode)
-    contract = web3.eth.contract(address=contractAddress, abi=res[0])
-    # print(list(map(lambda x: hex(ord(x)), contract.functions.decode('MzM=').call().decode())))
-    # print(contract.functions.encode('0x3333').call())
-    # print(contract.functions.plus(3, 4).call())
-    # print(contract.functions.average(2, 8).call())
-    print(eval("list(map(lambda x: hex(ord(x)), contract.functions.decode('MzM=').call().decode()))"))
+    # 单次测试
+    # res = combine_by_index([0, 1, 2, 3, 4, 5, 10, 11], read_compiled_contract())
+    # contractAddress = deploy(*res)
+    # # bytecode = '608060405234801561001057600080fd5b506103d9806100206000396000f30073000000000000000000000000000000000000000030146080604052600436106100355760003560e01c|68000000000000000356|565b600080fd5b61004d6100483660046101c9565b610063565b60405161005a919061027a565b60405180910390f35b606081516000141561008357505060408051602081019091526000815290565b600060405180606001604052806040815260200161035560409139905060006003845160026100b291906102cf565b6100bc91906102e7565b6100c7906004610309565b905060006100d68260206102cf565b67ffffffffffffffff8111156100ee576100ee61033e565b6040519080825280601f01601f191660200182016040528015610118576020820181803683370190505b509050818152600183018586518101602084015b81831015610184576003830192508251603f8160121c168501518253600182019150603f81600c1c168501518253600182019150603f8160061c168501518253600182019150603f811685015182535060010161012c565b60038951066001811461019e57600281146101af576101bb565b613d3d60f01b6001198301526101bb565b603d60f81b6000198301525b509398975050505050505050565b6000602082840312156101db57600080fd5b813567ffffffffffffffff808211156101f357600080fd5b818401915084601f83011261020757600080fd5b8135818111156102195761021961033e565b604051601f8201601f19908116603f011681019083821181831017156102415761024161033e565b8160405282815287602084870101111561025a57600080fd5b826020860160208301376000928101602001929092525095945050505050565b600060208083528351808285015260005b818110156102a75785810183015185820160400152820161028b565b818111156102b9576000604083870101525b50601f01601f1916929092016040019392505050565b600082198211156102e2576102e2610328565b500190565b60008261030457634e487b7160e01b600052601260045260246000fd5b500490565b600081600019048311821515161561032357610323610328565b500290565b634e487b7160e01b600052601160045260246000fd5b634e487b7160e01b600052604160045260246000fdfe|77|5b806312496a1b1461003a57603556a2646970667358221220f445f141227cd3210f57c2b91a0409e7af9909358857b0f676fa4929ab6fd44b64736f6c63430008070033'.replace('|', '')
+    # # contractAddress = deploy(res[0], bytecode)
+    # contract = web3.eth.contract(address=contractAddress, abi=res[0])
+    # print(contract.functions.min(100, 2).call())
+    # print(contract.functions.computeAddress('0x7465737400000000000000000000000000000000000000000000000000000000', '0x7465737400000000000000000000000000000000000000000000000000000000').call())
+    # # print(list(map(lambda x: hex(ord(x)), contract.functions.decode('MzM=').call().decode())))
+    # # print(contract.functions.encode(b'T*\x05\x0eM#a\xa9&\xc8').call())
+    # # print(contract.functions.times(84007913129639935, 3332).call())
+
+    # 批量测试
+    test_list = [0, 1, 2, 3, 4, 5, 6, 7, 10, 11, 12, 13]
+    test_res = batch_test(test_list, 50)
+    csvName = 'testResult.csv'
+    try:
+        with open(csvName, 'a+', newline='', encoding='utf8') as csvFile:
+            csvWriter = csv.writer(csvFile)
+            csvWriter.writerow(['合并的文件: {}'.format(str(list(map(lambda x:x[0], test_res[1:-1]))))])
+            csvWriter.writerows(test_res)
+            csvWriter.writerow([])
+    except:
+        print("文件被占用")
 
     # 验证base64等价性
     # lib = read_compiled_contract()

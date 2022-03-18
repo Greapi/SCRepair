@@ -1,0 +1,164 @@
+"合并的文件: ['单例文件', 'Base64_1_087.sol', 'Base64_2_087.sol', 'BasicMathLib_1_0425.sol', 'BasicMathLib_2_0425.sol', 'Math_1_0425.sol', 'Math_2_087.sol', 'Strings_1_0425.sol', 'Strings_2_087.sol']"
+单例文件,函数数目,测试用例数目,通过数目,未通过数目
+Base64_1_087.sol,1,50,50,0
+Base64_2_087.sol,1,50,50,0
+BasicMathLib_1_0425.sol,2,100,100,0
+BasicMathLib_2_0425.sol,2,100,100,0
+Math_1_0425.sol,2,100,100,0
+Math_2_087.sol,2,100,100,0
+Strings_1_0425.sol,1,50,50,0
+Strings_2_087.sol,2,100,100,0
+total,13,650,650,0
+
+"合并的文件: ['单例文件', 'Base64_1_087.sol', 'Base64_2_087.sol']"
+单例文件,函数数目,测试用例数目,通过数目,未通过数目
+Base64_1_087.sol,1,50,50,0
+Base64_2_087.sol,1,50,50,0
+total,2,100,100,0
+
+"合并的文件: ['单例文件', 'BasicMathLib_1_0425.sol', 'BasicMathLib_2_0425.sol']"
+单例文件,函数数目,测试用例数目,通过数目,未通过数目
+BasicMathLib_1_0425.sol,2,100,100,0
+BasicMathLib_2_0425.sol,2,100,100,0
+total,4,200,200,0
+
+"合并的文件: ['单例文件', 'Math_1_0425.sol', 'Math_2_087.sol']"
+单例文件,函数数目,测试用例数目,通过数目,未通过数目
+Math_1_0425.sol,2,100,100,0
+Math_2_087.sol,2,100,100,0
+total,4,200,200,0
+
+"合并的文件: ['单例文件', 'Strings_1_0425.sol', 'Strings_2_087.sol']"
+单例文件,函数数目,测试用例数目,通过数目,未通过数目
+Strings_1_0425.sol,1,50,50,0
+Strings_2_087.sol,2,100,98,2
+total,3,150,148,2
+
+"合并的文件: ['单例文件', 'Strings_1_0425.sol', 'Strings_2_087.sol']"
+单例文件,函数数目,测试用例数目,通过数目,未通过数目
+Strings_1_0425.sol,1,50,50,0
+Strings_2_087.sol,2,100,100,0
+total,3,150,150,0
+
+"合并的文件: ['单例文件', 'Strings_1_0425.sol', 'Strings_2_087.sol']"
+单例文件,函数数目,测试用例数目,通过数目,未通过数目
+Strings_1_0425.sol,1,50,50,0
+Strings_2_087.sol,2,100,100,0
+total,3,150,150,0
+
+"合并的文件: ['Base64_1_087.sol', 'Base64_2_087.sol', 'Create2_087.sol']"
+单例文件,函数数目,测试用例数目,通过数目,未通过数目
+Base64_1_087.sol,1,10,10,0
+Base64_2_087.sol,1,10,10,0
+Create2_087.sol,1,10,10,0
+total,3,30,30,0
+
+
+"合并的文件: ['SignedMath_1_0425.sol', 'SignedMath_2_087.sol']"
+单例文件,函数数目,测试用例数目,通过数目,未通过数目
+SignedMath_1_0425.sol,2,20,20,0
+SignedMath_2_087.sol,2,20,20,0
+total,4,40,40,0
+
+"合并的文件: ['Base64_2_087.sol', 'BasicMathLib_1_0425.sol', 'BasicMathLib_2_0425.sol', 'Create2_087.sol', 'Math_1_0425.sol', 'Math_2_087.sol', 'MerkleProof_087.sol', 'SignedMath_1_0425.sol', 'SignedMath_2_087.sol', 'Strings_1_0425.sol', 'Strings_2_087.sol']"
+单例文件,函数数目,测试用例数目,通过数目,未通过数目
+Base64_2_087.sol,1,1,1,0
+BasicMathLib_1_0425.sol,2,2,2,0
+BasicMathLib_2_0425.sol,2,2,2,0
+Create2_087.sol,1,1,1,0
+Math_1_0425.sol,2,2,2,0
+Math_2_087.sol,2,2,2,0
+MerkleProof_087.sol,2,2,2,0
+SignedMath_1_0425.sol,2,2,1,1
+SignedMath_2_087.sol,2,2,1,1
+Strings_1_0425.sol,1,1,1,0
+Strings_2_087.sol,2,2,2,0
+total,19,19,17,2
+
+"合并的文件: ['SignedMath_1_0425.sol', 'SignedMath_2_087.sol']"
+单例文件,函数数目,测试用例数目,通过数目,未通过数目
+SignedMath_1_0425.sol,2,6,6,0
+SignedMath_2_087.sol,2,6,6,0
+total,4,12,12,0
+
+"合并的文件: ['Base64_2_087.sol', 'SignedMath_1_0425.sol', 'SignedMath_2_087.sol']"
+单例文件,函数数目,测试用例数目,通过数目,未通过数目
+Base64_2_087.sol,1,3,3,0
+SignedMath_1_0425.sol,2,6,6,0
+SignedMath_2_087.sol,2,6,6,0
+total,5,15,15,0
+
+"合并的文件: ['Base64_2_087.sol', 'BasicMathLib_1_0425.sol', 'SignedMath_1_0425.sol', 'SignedMath_2_087.sol']"
+单例文件,函数数目,测试用例数目,通过数目,未通过数目
+Base64_2_087.sol,1,3,3,0
+BasicMathLib_1_0425.sol,2,6,6,0
+SignedMath_1_0425.sol,2,6,6,0
+SignedMath_2_087.sol,2,6,6,0
+total,7,21,21,0
+
+"合并的文件: ['Base64_2_087.sol', 'BasicMathLib_1_0425.sol', 'BasicMathLib_2_0425.sol', 'SignedMath_1_0425.sol', 'SignedMath_2_087.sol']"
+单例文件,函数数目,测试用例数目,通过数目,未通过数目
+Base64_2_087.sol,1,3,3,0
+BasicMathLib_1_0425.sol,2,6,6,0
+BasicMathLib_2_0425.sol,2,6,6,0
+SignedMath_1_0425.sol,2,6,6,0
+SignedMath_2_087.sol,2,6,6,0
+total,9,27,27,0
+
+"合并的文件: ['Base64_1_087.sol', 'Base64_2_087.sol', 'BasicMathLib_1_0425.sol', 'BasicMathLib_2_0425.sol', 'Create2_087.sol', 'Math_1_0425.sol', 'SignedMath_1_0425.sol', 'SignedMath_2_087.sol']"
+单例文件,函数数目,测试用例数目,通过数目,未通过数目
+Base64_1_087.sol,1,3,3,0
+Base64_2_087.sol,1,3,3,0
+BasicMathLib_1_0425.sol,2,6,6,0
+BasicMathLib_2_0425.sol,2,6,6,0
+Create2_087.sol,1,3,3,0
+Math_1_0425.sol,2,6,5,1
+SignedMath_1_0425.sol,2,6,3,3
+SignedMath_2_087.sol,2,6,6,0
+total,13,39,35,4
+
+"合并的文件: ['Base64_1_087.sol', 'Base64_2_087.sol', 'BasicMathLib_1_0425.sol', 'BasicMathLib_2_0425.sol', 'Create2_087.sol', 'Math_1_0425.sol', 'Math_2_087.sol', 'SignedMath_1_0425.sol', 'SignedMath_2_087.sol']"
+单例文件,函数数目,测试用例数目,通过数目,未通过数目
+Base64_1_087.sol,1,3,3,0
+Base64_2_087.sol,1,3,3,0
+BasicMathLib_1_0425.sol,2,6,6,0
+BasicMathLib_2_0425.sol,2,6,6,0
+Create2_087.sol,1,3,3,0
+Math_1_0425.sol,2,6,6,0
+Math_2_087.sol,2,6,6,0
+SignedMath_1_0425.sol,2,6,6,0
+SignedMath_2_087.sol,2,6,6,0
+total,15,45,45,0
+
+"合并的文件: ['Base64_1_087.sol', 'Base64_2_087.sol', 'BasicMathLib_1_0425.sol', 'BasicMathLib_2_0425.sol', 'Create2_087.sol', 'Math_1_0425.sol', 'Math_2_087.sol', 'MerkleProof_087.sol', 'SignedMath_1_0425.sol', 'SignedMath_2_087.sol', 'Strings_1_0425.sol', 'Strings_2_087.sol']"
+单例文件,函数数目,测试用例数目,通过数目,未通过数目
+Base64_1_087.sol,1,3,3,0
+Base64_2_087.sol,1,3,3,0
+BasicMathLib_1_0425.sol,2,6,6,0
+BasicMathLib_2_0425.sol,2,6,6,0
+Create2_087.sol,1,3,3,0
+Math_1_0425.sol,2,6,6,0
+Math_2_087.sol,2,6,6,0
+MerkleProof_087.sol,2,6,6,0
+SignedMath_1_0425.sol,2,6,6,0
+SignedMath_2_087.sol,2,6,6,0
+Strings_1_0425.sol,1,3,3,0
+Strings_2_087.sol,2,6,6,0
+total,20,60,60,0
+
+"合并的文件: ['Base64_1_087.sol', 'Base64_2_087.sol', 'BasicMathLib_1_0425.sol', 'BasicMathLib_2_0425.sol', 'Create2_087.sol', 'Math_1_0425.sol', 'Math_2_087.sol', 'MerkleProof_087.sol', 'SignedMath_1_0425.sol', 'SignedMath_2_087.sol', 'Strings_1_0425.sol', 'Strings_2_087.sol']"
+单例文件,函数数目,测试用例数目,通过数目,未通过数目
+Base64_1_087.sol,1,50,50,0
+Base64_2_087.sol,1,50,50,0
+BasicMathLib_1_0425.sol,2,100,100,0
+BasicMathLib_2_0425.sol,2,100,100,0
+Create2_087.sol,1,50,50,0
+Math_1_0425.sol,2,100,100,0
+Math_2_087.sol,2,100,100,0
+MerkleProof_087.sol,2,100,100,0
+SignedMath_1_0425.sol,2,100,100,0
+SignedMath_2_087.sol,2,100,100,0
+Strings_1_0425.sol,1,50,50,0
+Strings_2_087.sol,2,100,100,0
+total,20,1000,1000,0
+
