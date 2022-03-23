@@ -1,4 +1,5 @@
 import os
+# 处理形如 <PUSH 80 PUSH 60 DUP1> 的字节码
 # 用于将 Remix 中拷贝出来一行的字节码，转化成多行形式
 def _convert_remix(codes: str):
     num = 0
@@ -22,13 +23,13 @@ def _convert_remix(codes: str):
     return converted
 
 def convert_remix(fileName: str):
-    fileName = "double-opcode.txt"
     with open(fileName) as f:
         convert = _convert_remix(f.read())
     os.remove(fileName)
     with open(fileName, 'w') as f:
         f.write(convert)
 
+# 给从 Remix 拷贝出来的字节码编号
 def index_opcode(file: str):
     with open(file) as f:
         convert = ''
@@ -43,5 +44,4 @@ def index_opcode(file: str):
 
 
 if __name__ == "__main__":
-    index_opcode('c.txt')
-    print("ok")
+    index_opcode('c.txt')  # 文件已删
