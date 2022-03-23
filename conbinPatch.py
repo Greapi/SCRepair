@@ -5,6 +5,7 @@ import math
 from utils import Hex, to_opcode, print_formatted
 import opcodes as op
 import copy
+from collections import defaultdict
 
 
 def format_bytecode(bytecode, is_temp=False) -> list:
@@ -24,9 +25,10 @@ def format_bytecode(bytecode, is_temp=False) -> list:
         assert (i == len(bytecode))
     return res
 
+
 # 找到 codecopy 并分析 offset 与
-def find_codecopy(bytecode: str, base: Hex) -> list[list[Hex, int]]:
-    off_len_line = list()  # 表示没有.byte部分
+def find_codecopy(bytecode: str, base: Hex) -> list[list[Hex, list[int]]]:
+    temp_dict = defaultdict(list)
     # 尝试通过 codecopy 找出 .byte
     fb = format_bytecode(bytecode, True)
     for i, line in enumerate(fb):
@@ -35,11 +37,15 @@ def find_codecopy(bytecode: str, base: Hex) -> list[list[Hex, int]]:
             para1 = fb[i - 3]  # offset
             para2 = fb[i - 2]  # length
             if is_push(para1[1]) and is_push(para2[1]) and para1[2] != '' and para2[2] != '':  # 表示均为 push 且取值有意义
-                off_len_line.append([Hex(para1[2]), Hex(para2[2]), i])
+                offset, length = max(Hex(para1[2]), Hex(para2[2])), min(Hex(para1[2]), Hex(para2[2]))
+                temp_dict[(offset, length)].append(i)
+
+    off_len_line = [[item[0][0], item[0][1], item[1]] for item in temp_dict.items()]  # [] 表示没有.byte部分
 
     off_len_line.sort(key=lambda x: x[0])  # 以 offset 进行排序
 
     return off_len_line
+
 
 # 验证 codecopy 的有效性, ⑴ 验证开头是否与fe或00相接 ⑵ 验证结尾是否为字节码末端 ⑶ 验证offset与length是否首尾相连
 # @bytecode 与data块相接的块字节码 + data块
@@ -51,12 +57,13 @@ def assert_codecopy_valid(off_len_line: list, bytecode: str, base: Hex):
         last_bytecode = bytecode[last_code_index:last_code_index + 2]
         # 确认是否找到 .byte 部分的开头, 确认是否找到.byte末尾
         assert last_bytecode == op.invalid_fe or last_bytecode == op.stop, "没有找到.byte开头"
-        assert off_len_line[-1][0] + off_len_line[-1][1] == base + Hex(len(bytecode)//2), "没有找到.byte末尾"
+        assert off_len_line[-1][0] + off_len_line[-1][1] == base + Hex(len(bytecode) // 2), "没有找到.byte末尾"
         # 验证找到的.byte链接的合法性
         i = 1
         while i < len(off_len_line):
             assert off_len_line[i - 1][0] + off_len_line[i - 1][1] == off_len_line[i][0], ".byte链接不合法"
             i += 1
+
 
 # 格式化的字节码
 class FBytecode:
@@ -435,13 +442,15 @@ class Source:
     def codecopy_revise(self, data_target: Hex) -> Hex:
         # 找到所有的 codecopy
         codecopy_info = find_codecopy(self.funs_impl.bytecode, self.funs_impl.base)
-        for _, length, line in codecopy_info:
-            push_length = Hex(self.funs_impl[line - 3][1]) - Hex(op.push1) + Hex('1')  # 获得 push 所能承载的字节
-            assert data_target.blength <= push_length, "codecopy替换空间不足"
-            self.funs_impl.replace_by_line(line - 3, push_generator(data_target, push_length))
+        for _, length, lines in codecopy_info:
+            for line in lines:
+                push_length = Hex(self.funs_impl[line - 3][1]) - Hex(op.push1) + Hex('1')  # 获得 push 所能承载的字节
+                assert data_target.blength <= push_length, "codecopy替换空间不足"
+                self.funs_impl.replace_by_line(line - 3, push_generator(data_target, push_length))
             data_target += length
         codecopy_info = find_codecopy(self.funs_impl.bytecode, self.funs_impl.base)
-        assert_codecopy_valid(codecopy_info, self.selector_revise.bytecode+self.extra_data.bytecode, self.selector_revise.base)
+        assert_codecopy_valid(codecopy_info, self.selector_revise.bytecode + self.extra_data.bytecode,
+                              self.selector_revise.base)
         return data_target
 
     # ⑴ 进行对 fun_impl 的合并 ⑵ 更新 codecopy ⑶ 更新selector_revise的base
@@ -490,7 +499,8 @@ class Source:
                 else:
                     output += '\n'
                 counter += 1
-        output += ".byte 偏移 {}, 共 {} 字节\n{}\n".format(self.extra_data.base, self.extra_data.length, self.extra_data.bytecode)
+        output += ".byte 偏移 {}, 共 {} 字节\n{}\n".format(self.extra_data.base, self.extra_data.length,
+                                                      self.extra_data.bytecode)
         output += ".Metadata 偏移 {}, 共 {} 字节\n{}".format(self.cbor.base, self.cbor.length, self.cbor.bytecode)
         return output
 
@@ -615,8 +625,8 @@ class Addition:
         if len(codecopy_info) != 0:
             assert_codecopy_valid(codecopy_info, funs_impl_data, base)
             divider_hex = codecopy_info[0][0] - base
-            self.funs_impl = FunsImpl(funs_impl_data[:divider_hex.num*2], base)
-            self.extra_data = Data(funs_impl_data[divider_hex.num*2:], divider_hex+base)
+            self.funs_impl = FunsImpl(funs_impl_data[:divider_hex.num * 2], base)
+            self.extra_data = Data(funs_impl_data[divider_hex.num * 2:], divider_hex + base)
         else:
             self.funs_impl = FunsImpl(funs_impl_data, base)
             self.extra_data = Data('', base)  # 此时 extra_data 无数据
@@ -651,10 +661,11 @@ class Addition:
     def codecopy_revise(self, data_target: Hex) -> Hex:
         # 找到所有的 codecopy
         codecopy_info = find_codecopy(self.funs_impl.bytecode, self.funs_impl.base)
-        for _, length, line in codecopy_info:
-            push_length = Hex(self.funs_impl[line - 3][1]) - Hex(op.push1) + Hex('1')  # 获得 push 所能承载的字节
-            assert data_target.blength <= push_length, "codecopy替换空间不足"
-            self.funs_impl.replace_by_line(line - 3, push_generator(data_target, push_length))
+        for _, length, lines in codecopy_info:
+            for line in lines:
+                push_length = Hex(self.funs_impl[line - 3][1]) - Hex(op.push1) + Hex('1')  # 获得 push 所能承载的字节
+                assert data_target.blength <= push_length, "codecopy替换空间不足"
+                self.funs_impl.replace_by_line(line - 3, push_generator(data_target, push_length))
             data_target += length
         return data_target
 
@@ -763,7 +774,8 @@ def combine_bytecode(src: Source, add: Addition):
             # 将相邻过近的jump(i)放在一起
             if len(jump_nums) > 0 and \
                     (add.funs_impl.blength_by_line(jump_nums[-1][-1] + 1, i)) <= Hex('4') and \
-                    not add.funs_impl.have_jumpdest(jump_nums[-1][-1] + 1, i - 1):  # 以此原因而作为单独的jump, 后续会因为碰触到 jumpdest 的引起错误
+                    not add.funs_impl.have_jumpdest(jump_nums[-1][-1] + 1,
+                                                    i - 1):  # 以此原因而作为单独的jump, 后续会因为碰触到 jumpdest 的引起错误
                 jump_nums[-1].append(i)
             else:
                 jump_nums.append([i])
@@ -804,7 +816,8 @@ def combine_bytecode(src: Source, add: Addition):
             # 情况1: 当为下一字节为 JUMPDEST 时, 可以少一字节, 因为跳转可以指向下一 JUMPDEST
             # 情况2: 正常修正, 蹦床带有 JUMPDEST
             if (curr_length >= min_trampoline_length - Hex('1') and add.funs_impl[jump_num[-1]][1] == op.jump) or \
-                    (curr_length >= min_trampoline_length - Hex('1') and add.funs_impl[jump_num[-1] + 1][1] == op.jumpdest) or \
+                    (curr_length >= min_trampoline_length - Hex('1') and add.funs_impl[jump_num[-1] + 1][
+                        1] == op.jumpdest) or \
                     curr_length >= min_trampoline_length:
                 break
             start -= 1
@@ -850,8 +863,10 @@ def combine_bytecode(src: Source, add: Addition):
     data_target = src.codecopy_revise(data_target)  # src 部分
     add.codecopy_revise(data_target)  # add 部分
     # 验证修正以后的合法性
-    codecopy_info = find_codecopy(src.funs_impl.bytecode+add.funs_impl.bytecode, src.funs_impl.base)  # 此时 src 与 add 的字节码还未合并
-    assert_codecopy_valid(codecopy_info, src.selector_revise.bytecode + src.extra_data.bytecode + add.extra_data.bytecode,
+    codecopy_info = find_codecopy(src.funs_impl.bytecode + add.funs_impl.bytecode,
+                                  src.funs_impl.base)  # 此时 src 与 add 的字节码还未合并
+    assert_codecopy_valid(codecopy_info,
+                          src.selector_revise.bytecode + src.extra_data.bytecode + add.extra_data.bytecode,
                           src.selector_revise.base)
 
     # 修复 funs_impl 和 安装 jump_patch
@@ -859,10 +874,11 @@ def combine_bytecode(src: Source, add: Addition):
     src.append_funs_impl(revised_funs_impl_code, patch)  # 除合并 funs_impl 外
 
     # 更新 extra_data
-    src.extra_data.update(src.extra_data.bytecode+add.extra_data.bytecode, patch_target+src.selector_revise.length)
+    src.extra_data.update(src.extra_data.bytecode + add.extra_data.bytecode, patch_target + src.selector_revise.length)
 
     # 更新 CBOR
-    src.cbor.update(src.cbor.bytecode+add.cbor.bytecode, patch_target+src.selector_revise.length+src.extra_data.length)
+    src.cbor.update(src.cbor.bytecode + add.cbor.bytecode,
+                    patch_target + src.selector_revise.length + src.extra_data.length)
 
     # 更新 constructor
     src.constructor_update()
@@ -879,12 +895,13 @@ def addition_to_source(add: Addition) -> Source:
     src.funs_impl = copy.deepcopy(add.funs_impl)
     # 创建 selector_revise
     src.selector_revise = SelectorRevise(add.selector.bytecode, add.middle.length, add.fallback_impl.base)
-    src.extra_data = Data(add.extra_data.bytecode, add.extra_data.base+src.selector_revise.length)  # 多了 selector_revise 到的长度
-    src.cbor = Data(add.cbor.bytecode, add.cbor.base+src.selector_revise.length)
+    src.extra_data = Data(add.extra_data.bytecode,
+                          add.extra_data.base + src.selector_revise.length)  # 多了 selector_revise 到的长度
+    src.cbor = Data(add.cbor.bytecode, add.cbor.base + src.selector_revise.length)
     # constructor 修正
     src.constructor_update()
     # codecopy 修正
-    src.codecopy_revise(add.extra_data.base+src.selector_revise.length)
+    src.codecopy_revise(add.extra_data.base + src.selector_revise.length)
     codecopy_info = find_codecopy(src.funs_impl.bytecode, src.funs_impl.base)
     assert_codecopy_valid(codecopy_info, src.selector_revise.bytecode + src.extra_data.bytecode,
                           src.selector_revise.base)
