@@ -77,7 +77,8 @@ def test_divider(file_folder: str):
         for i, line in enumerate(file.readlines()):
             if line.startswith('0x'):
                 try:
-                    Addition(constructor + line[2:].strip())
+                    add = Addition(constructor + line[2:].strip())
+                    var = add.funs_impl.formatted_bytecode
                     counter_true += 1
                 except:
                     print('{} {}行 {}'.format(_file_path, i + 1, line[2:].strip()))
@@ -85,17 +86,25 @@ def test_divider(file_folder: str):
         print('---------------------------------')
         return counter_true, counter_false
 
-    counter_t = counter_f = 0
+    tes_res = []
     if is_file:
-        counter_t, counter_f = _test(file_folder)
+        temp = _test(file_folder)
+        tes_res.append([file_folder, temp[0]+temp[1], temp[0], temp[1], temp[0]/(temp[0]+temp[1])])
     else:
         for root, dirs, files in os.walk(file_folder):
             for file_name in files:
                 file_path = os.path.join(root, file_name)
                 temp = _test(file_path)
-                counter_t += temp[0]
-                counter_f += temp[1]
-    print("总计: {} 成功: {} 失败: {}".format(counter_t + counter_f, counter_t, counter_f))
+                tes_res.append([file_name, temp[0]+temp[1], temp[0], temp[1], temp[0]*100/(temp[0]+temp[1])])
+
+    tes_res.append(['总计',
+                    sum(map(lambda x: x[1], tes_res[:])),
+                    sum(map(lambda x: x[2], tes_res[:])),
+                    sum(map(lambda x: x[3], tes_res[:])),
+                    sum(map(lambda x: x[4], tes_res[:]))/len(tes_res)])
+
+    for curr in tes_res:
+        print("{} 总计: {} 成功: {} 失败: {} 成功率: {}%".format(*curr))
 
 
 def test_combine(file_folder: str, out=True):
@@ -106,6 +115,23 @@ def test_combine(file_folder: str, out=True):
     else:
         raise FileNotFoundError("文件/文件夹不存在")
 
+    def _blength_of_line(line_num: int, formatted_bytecode: list) -> Hex:
+        default = 1
+        _curr = int(formatted_bytecode[line_num][1], 16)
+        if int('60', 16) <= _curr <= int('7F', 16):
+            default += _curr - int('60', 16) + 1
+        return Hex(default)
+
+    def blength_by_line(start: int, end: int, formatted_bytecode: list) -> Hex:
+        before_end = formatted_bytecode[end][0] - formatted_bytecode[start][0]
+        return before_end + _blength_of_line(end, formatted_bytecode)
+
+    def have_jumpdest(start: int, end: int, formatted_bytecode: list) -> bool:
+        for _, opcode, _ in formatted_bytecode[start:end + 1]:
+            if opcode == op.jumpdest:
+                return True
+        return False
+
     def _test(_file_path: str, _out):
         counter_true = counter_false = 0
         constructor = '61017e610030600b82828239805160001a6073146000811461002057610022565bfe5b5030600052607381538281f300'
@@ -114,32 +140,38 @@ def test_combine(file_folder: str, out=True):
             if line.startswith('0x'):
                 try:
                     add = Addition(constructor + line[2:].strip())
-                    # 找到新合约 funs_impl 中所有 jump(i) 的行号
+                    fb = add.funs_impl.formatted_bytecode
                     jump_nums = list()
-                    for _i, opcode in enumerate(add.funs_impl):
+                    for _i, opcode in enumerate(fb):
                         if opcode[1] == op.jump or opcode[1] == op.jumpi:
-                            jump_nums.append(_i)
+                            # 将相邻过近的jump(i)放在一起
+                            if len(jump_nums) > 0 and \
+                                    (blength_by_line(jump_nums[-1][-1] + 1, _i, fb)) <= Hex('4') and \
+                                    not have_jumpdest(jump_nums[-1][-1] + 1, i - 1, fb):  # 以此原因而作为单独的jump, 后续会因为碰触到 jumpdest 的引起错误
+                                jump_nums[-1].append(_i)
+                            else:
+                                jump_nums.append([_i])
                     for jump_num in jump_nums:
-                        start = jump_num
                         # 采用 CGF 的方案, 对 jump(i) 的上一行判断
-                        opcode = add.funs_impl[jump_num - 1][1]
-                        operand = add.funs_impl[jump_num - 1][2]
-                        if is_push(opcode) and Hex(len(operand) // 2) >= Hex('2'):  # 大于两个字节
-                            continue
-                        # 找到填充蹦床的起始位置 start
+                        if len(jump_num) == 1:  # 仅对无连续jump(i)采用 CFG 方案
+                            opcode = fb[jump_num[0] - 1][1]
+                            operand = fb[jump_num[0] - 1][2]
+                            if is_push(opcode):
+                                if is_push(opcode) and Hex(len(operand) // 2) >= Hex('2'):  # 大于两个字节
+                                    continue
+                        # 找到填充蹦床的起始位置(start)
+                        start = jump_num[0]  # 替换 jump(i) 本身, 从当前行开始
                         min_trampoline_length = Hex('5')
                         while True:
-                            curr_length = add.funs_impl.blength_by_line(start, jump_num)
-                            if add.funs_impl[start][1] == op.jumpdest:  # 碰到基本块代表没有足够的划分空间
+                            curr_length = blength_by_line(start, jump_num[-1], fb)
+                            if fb[start][1] == op.jumpdest:  # 不能碰到基本块
                                 if _out:
-                                    print('{} {}行 {}'.format(_file_path, i + 1, line[2:].strip()))
-                                    add.funs_impl.print_by_line(start, jump_num)
-                                raise OverflowError('没有足够的空间')
-                            if (curr_length >= min_trampoline_length - Hex('1') and add.funs_impl[jump_num][
-                                1] == op.jump) or \
-                                    (curr_length >= min_trampoline_length - Hex('1') and add.funs_impl[jump_num + 1][
-                                        1] == op.jumpdest) or \
-                                    curr_length >= min_trampoline_length:
+                                    add.funs_impl.print_by_line(start, jump_num[-1])
+                                raise OverflowError("没有足够的空间")
+                            if (curr_length >= min_trampoline_length - Hex('1') and fb[jump_num[-1]][1] == op.jump) or \
+                                    (curr_length >= min_trampoline_length - Hex('1') and fb[jump_num[-1] + 1][1] == op.jumpdest):
+                                break
+                            if curr_length >= min_trampoline_length:
                                 break
                             start -= 1
                     counter_true += 1
@@ -150,18 +182,40 @@ def test_combine(file_folder: str, out=True):
 
         return counter_true, counter_false
 
-    counter_t = counter_f = 0
+    tes_res = []
     if is_file:
-        counter_t, counter_f = _test(file_folder, out)
+        temp = _test(file_folder, out)
+        tes_res.append([file_folder, temp[0] + temp[1], temp[0], temp[1], temp[0] / (temp[0] + temp[1])])
     else:
         for root, dirs, files in os.walk(file_folder):
             for file_name in files:
                 file_path = os.path.join(root, file_name)
                 temp = _test(file_path, out)
-                counter_t += temp[0]
-                counter_f += temp[1]
+                tes_res.append([file_name, temp[0]+temp[1], temp[0], temp[1], temp[0]*100/(temp[0]+temp[1])])
 
-    print("总计: {} 成功: {} 失败: {}".format(counter_t + counter_f, counter_t, counter_f))
+    tes_res.append(['',
+                    sum(map(lambda x: x[1], tes_res[:])),
+                    sum(map(lambda x: x[2], tes_res[:])),
+                    sum(map(lambda x: x[3], tes_res[:])),
+                    sum(map(lambda x: x[4], tes_res[:]))/len(tes_res)])
+
+    for curr in tes_res:
+        print("{} 总计: {} 成功: {} 失败: {} 成功率: {}%".format(*curr))
+
+def get_length(folder: str):
+    tes_res = []
+    for root, dirs, files in os.walk(folder):
+        for file_name in files:
+            file_path = os.path.join(root, file_name)
+            file = open(file_path, 'r', encoding='utf8')
+            length = 0
+            i = 0
+            for line in file.readlines():
+                length += len(line)
+                i += 1
+            tes_res.append([file_name, length/i])
+    for curr_res in tes_res:
+        print("{} 平均长度: {}".format(*curr_res))
 
 def find_not_enough_block(_contract: str):
     add = Addition(_contract)
@@ -206,7 +260,7 @@ def compile_contract(folder: str) -> list:
             items = compiled.popitem()[1]
             out_list.append([file_name, items['abi'], items['bin']])
 
-    out_list.sort(key=lambda x: x[0])
+    # out_list.sort(key=lambda x: x[0])
 
     return out_list
 
@@ -383,6 +437,9 @@ if __name__ == '__main__':
     # 批量测试合并模块是否正常
     # test_combine('valid_dataset', False)
 
+    # 测试平均长度
+    # get_length('valid_dataset')
+
     # 测试批量编译模块
     update_compiled_contract()
     # print(*[[i, con] for i, con in enumerate(read_compiled_contract())], sep='\n')
@@ -400,8 +457,8 @@ if __name__ == '__main__':
     # # print(contract.functions.times(84007913129639935, 3332).call())
 
     # 批量测试
-    test_list = [0, 1, 2, 3, 4, 5, 6, 7, 10, 11, 12, 13]
-    test_res = batch_test(test_list, 50)
+    test_list = [0, 1, 2, 3, 4, 5, 6, 7, 8]
+    test_res = batch_test(test_list, 100)
     csvName = 'testResult.csv'
     try:
         with open(csvName, 'a+', newline='', encoding='utf8') as csvFile:
