@@ -204,17 +204,23 @@ class SelectorGenerator(FunBlock):
 
 
 class SelectorTrampoline(FunBlock):
+    def _valid_trampoline(self, target):
+        if self.length.num > 32+2:  # 一组 PUSH32 + JUMP 最多可占 34 字节
+            bytecode = push_generator(target, Hex(32)) + op.jump
+            bytecode += op.jumpdest * (self.length - Hex(32) - Hex(2)).num  # 减去 PUSH 和 JUMP 所占的字节数
+        else:
+            bytecode = push_generator(target, self.length - Hex(2)) + op.jump
+        return bytecode
+
     # 这里 bytecode 只起到计算长度的作用
     def __init__(self, bytecode='', base=Hex('0'), target=Hex('0')):
         super().__init__(bytecode, base)
         if target != Hex('0') and self.length > Hex('0'):
-            bytecode = push_generator(target, self.length - Hex('2')) + op.jump
+            bytecode = self._valid_trampoline(target)
             self.update_funBlock(bytecode, self.base)
 
     def update_target(self, target: Hex):
-        # 减Hex('2') -> push + jump
-        new_push = push_generator(target, self.length - Hex('2'))
-        new_bytecode = new_push + op.jump
+        new_bytecode = self._valid_trampoline(target)
         self.update_funBlock(new_bytecode, self.base)
 
 
@@ -697,6 +703,7 @@ class Trampoline(FBytecode):
 # 当 length 不为 0 时, 则操作数为 length 字节长度, 多余的补零
 # 当 length 为 0 时, 则操作数为刚好能容下 code 的字节长度, 奇数长度补一个零
 def push_generator(code: Hex, length=Hex('0')) -> str:
+    assert 0 <= length.num <= 32, "Length:{}, 长度不合法".format(length.num)
     code = code.s
     code_length = len(code)
     if length.num == 0:

@@ -9,6 +9,8 @@ import json
 from creatContract import combine_by_index, deploy, web3, abi_bytecode
 import base64
 
+random.seed(0)
+
 def is_push(opcode: str) -> bool:
     opcode_dec = int(opcode, 16)
     return int('60', 16) <= opcode_dec <= int('7F', 16)
@@ -62,7 +64,7 @@ def save_valid_file(path: str, out_path: str):
                 csv_writer(name, valid_list)
 
 
-def test_divider(file_folder: str):
+def test_divider(file_folder: str, out=True, by_year=False):
     if os.path.isfile(file_folder):
         is_file = True
     elif os.path.isdir(file_folder):
@@ -74,40 +76,60 @@ def test_divider(file_folder: str):
         counter_true = counter_false = 0
         constructor = '61017e610030600b82828239805160001a6073146000811461002057610022565bfe5b5030600052607381538281f300'
         file = open(_file_path, 'r', encoding='utf8')
-        for i, line in enumerate(file.readlines()):
+        for _i, line in enumerate(file.readlines()):
             if line.startswith('0x'):
                 try:
                     add = Addition(constructor + line[2:].strip())
                     var = add.funs_impl.formatted_bytecode
                     counter_true += 1
                 except:
-                    print('{} {}行 {}'.format(_file_path, i + 1, line[2:].strip()))
+                    error.append('{} {}行 {}'.format(_file_path, _i + 1, line[2:].strip()))
                     counter_false += 1
-        print('---------------------------------')
         return counter_true, counter_false
 
-    tes_res = []
+    test_res = []
+    error = []
     if is_file:
         temp = _test(file_folder)
-        tes_res.append([file_folder, temp[0]+temp[1], temp[0], temp[1], temp[0]/(temp[0]+temp[1])])
+        test_res.append([file_folder, temp[0] + temp[1], temp[0], temp[1], temp[0] / (temp[0] + temp[1])])
     else:
         for root, dirs, files in os.walk(file_folder):
             for file_name in files:
                 file_path = os.path.join(root, file_name)
                 temp = _test(file_path)
-                tes_res.append([file_name, temp[0]+temp[1], temp[0], temp[1], temp[0]*100/(temp[0]+temp[1])])
+                test_res.append([file_name, temp[0] + temp[1], temp[0], temp[1], temp[0] * 100 / (temp[0] + temp[1])])
 
-    tes_res.append(['总计',
-                    sum(map(lambda x: x[1], tes_res[:])),
-                    sum(map(lambda x: x[2], tes_res[:])),
-                    sum(map(lambda x: x[3], tes_res[:])),
-                    sum(map(lambda x: x[4], tes_res[:]))/len(tes_res)])
+    if by_year:
+        by_year_res = []
+        pre_year = None
+        for i, test in enumerate(test_res):
+            curr_year = os.path.splitext(test[0])[0].split('_')[1]
+            assert curr_year.isnumeric() and 2000 < int(curr_year) < 2023, "错误的年份格式"
+            if pre_year is not None and curr_year == pre_year:
+                by_year_res[-1][1] += test[1]
+                by_year_res[-1][2] += test[2]
+                by_year_res[-1][3] += test[3]
+                by_year_res[-1][4] = (by_year_res[-1][4] + test[4])/2
+            else:
+                by_year_res.append([curr_year, test[1], test[2], test[3], test[4]])
+            pre_year = curr_year
+        test_res = by_year_res
 
-    for curr in tes_res:
-        print("{} 总计: {} 成功: {} 失败: {} 成功率: {}%".format(*curr))
+    test_res.append(['',
+                    sum(map(lambda x: x[1], test_res[:])),
+                    sum(map(lambda x: x[2], test_res[:])),
+                    sum(map(lambda x: x[3], test_res[:])),
+                    sum(map(lambda x: x[4], test_res[:]))/len(test_res)])
+
+    if out:
+        for e in error:
+            print(e)
+
+    for curr in test_res:
+        print("{} 总计: {} 成功: {} 失败: {} 成功率: {:.2f}%".format(*curr))
 
 
-def test_combine(file_folder: str, out=True):
+def test_combine(file_folder: str, out=True, by_year=False):
     if os.path.isfile(file_folder):
         is_file = True
     elif os.path.isdir(file_folder):
@@ -132,7 +154,7 @@ def test_combine(file_folder: str, out=True):
                 return True
         return False
 
-    def _test(_file_path: str, _out):
+    def _test(_file_path: str):
         counter_true = counter_false = 0
         constructor = '61017e610030600b82828239805160001a6073146000811461002057610022565bfe5b5030600052607381538281f300'
         file = open(_file_path, 'r', encoding='utf8')
@@ -165,7 +187,7 @@ def test_combine(file_folder: str, out=True):
                         while True:
                             curr_length = blength_by_line(start, jump_num[-1], fb)
                             if fb[start][1] == op.jumpdest:  # 不能碰到基本块
-                                if _out:
+                                if out:
                                     add.funs_impl.print_by_line(start, jump_num[-1])
                                 raise OverflowError("没有足够的空间")
                             if (curr_length >= min_trampoline_length - Hex('1') and fb[jump_num[-1]][1] == op.jump) or \
@@ -177,30 +199,46 @@ def test_combine(file_folder: str, out=True):
                     counter_true += 1
                 except OverflowError:
                     counter_false += 1
-                except IndexError:
+                except:
                     pass
 
         return counter_true, counter_false
 
-    tes_res = []
+    test_res = []
     if is_file:
-        temp = _test(file_folder, out)
-        tes_res.append([file_folder, temp[0] + temp[1], temp[0], temp[1], temp[0] / (temp[0] + temp[1])])
+        temp = _test(file_folder)
+        test_res.append([file_folder, temp[0] + temp[1], temp[0], temp[1], temp[0] / (temp[0] + temp[1])])
     else:
         for root, dirs, files in os.walk(file_folder):
             for file_name in files:
                 file_path = os.path.join(root, file_name)
-                temp = _test(file_path, out)
-                tes_res.append([file_name, temp[0]+temp[1], temp[0], temp[1], temp[0]*100/(temp[0]+temp[1])])
+                temp = _test(file_path)
+                test_res.append([file_name, temp[0]+temp[1], temp[0], temp[1], temp[0]*100/(temp[0]+temp[1])])
 
-    tes_res.append(['',
-                    sum(map(lambda x: x[1], tes_res[:])),
-                    sum(map(lambda x: x[2], tes_res[:])),
-                    sum(map(lambda x: x[3], tes_res[:])),
-                    sum(map(lambda x: x[4], tes_res[:]))/len(tes_res)])
+    if by_year:
+        by_year_res = []
+        pre_year = None
+        for i, test in enumerate(test_res):
+            curr_year = os.path.splitext(test[0])[0].split('_')[1]
+            assert curr_year.isnumeric() and 2000 < int(curr_year) < 2023, "错误的年份格式"
+            if pre_year is not None and curr_year == pre_year:
+                by_year_res[-1][1] += test[1]
+                by_year_res[-1][2] += test[2]
+                by_year_res[-1][3] += test[3]
+                by_year_res[-1][4] = (by_year_res[-1][4] + test[4])/2
+            else:
+                by_year_res.append([curr_year, test[1], test[2], test[3], test[4]])
+            pre_year = curr_year
+        test_res = by_year_res
 
-    for curr in tes_res:
-        print("{} 总计: {} 成功: {} 失败: {} 成功率: {}%".format(*curr))
+    test_res.append(['',
+                    sum(map(lambda x: x[1], test_res[:])),
+                    sum(map(lambda x: x[2], test_res[:])),
+                    sum(map(lambda x: x[3], test_res[:])),
+                    sum(map(lambda x: x[4], test_res[:]))/len(test_res)])
+
+    for curr in test_res:
+        print("{} 总计: {} 成功: {} 失败: {} 成功率: {:.2f}%".format(*curr))
 
 def get_length(folder: str):
     tes_res = []
@@ -428,14 +466,20 @@ def batch_test(combine_order: list, amount_per_fun=10):
 
 if __name__ == '__main__':
     pass
+    # 生成合法的测试用例
+    # save_valid_file('dataset', 'valid_dataset')
+
     # 批量测试划分模块是否正常
-    # test_divider('valid_dataset')
+    # test_divider('valid_dataset', by_year=True, out=False)
     # constructor = '61017e610030600b82828239805160001a6073146000811461002057610022565bfe5b5030600052607381538281f300'
     # single = '60806040819052600080547f27601006000000000000000000000000000000000000000000000000000000008352909173ffffffffffffffffffffffffffffffffffffffff909116906327601006906084906020906004818787803b15801561006757600080fd5b505af115801561007b573d6000803e3d6000fd5b505050506040513d602081101561009157600080fd5b505160405190915073ffffffffffffffffffffffffffffffffffffffff8216903480156108fc02916000818181858888f193505050501580156100d8573d6000803e3d6000fd5b5060408051348152905173ffffffffffffffffffffffffffffffffffffffff831691309133917f4174a9435a04d04d274c76779cad136a41fde6937c56241c09ab9d3c7064a1a9919081900360200190a4500000a165627a7a72305820ae39c32102fc552b61c8b4c9ab60bfc96d362a374f86c1b2a82fdd30f762c8a40029'
     # Addition(constructor+single)
 
     # 批量测试合并模块是否正常
-    # test_combine('valid_dataset', False)
+    # s = time.time()
+    # test_combine('valid_dataset', out=False, by_year=True)
+    # e = time.time()
+    # print(e-s)
 
     # 测试平均长度
     # get_length('valid_dataset')
@@ -445,11 +489,13 @@ if __name__ == '__main__':
     # print(*[[i, con] for i, con in enumerate(read_compiled_contract())], sep='\n')
 
     # 单次测试
-    # res = combine_by_index([0, 1, 2, 3, 4, 5, 10, 11], read_compiled_contract())
+    # res = combine_by_index([6, 7], read_compiled_contract())
     # contractAddress = deploy(*res)
     # # bytecode = '608060405234801561001057600080fd5b506103d9806100206000396000f30073000000000000000000000000000000000000000030146080604052600436106100355760003560e01c|68000000000000000356|565b600080fd5b61004d6100483660046101c9565b610063565b60405161005a919061027a565b60405180910390f35b606081516000141561008357505060408051602081019091526000815290565b600060405180606001604052806040815260200161035560409139905060006003845160026100b291906102cf565b6100bc91906102e7565b6100c7906004610309565b905060006100d68260206102cf565b67ffffffffffffffff8111156100ee576100ee61033e565b6040519080825280601f01601f191660200182016040528015610118576020820181803683370190505b509050818152600183018586518101602084015b81831015610184576003830192508251603f8160121c168501518253600182019150603f81600c1c168501518253600182019150603f8160061c168501518253600182019150603f811685015182535060010161012c565b60038951066001811461019e57600281146101af576101bb565b613d3d60f01b6001198301526101bb565b603d60f81b6000198301525b509398975050505050505050565b6000602082840312156101db57600080fd5b813567ffffffffffffffff808211156101f357600080fd5b818401915084601f83011261020757600080fd5b8135818111156102195761021961033e565b604051601f8201601f19908116603f011681019083821181831017156102415761024161033e565b8160405282815287602084870101111561025a57600080fd5b826020860160208301376000928101602001929092525095945050505050565b600060208083528351808285015260005b818110156102a75785810183015185820160400152820161028b565b818111156102b9576000604083870101525b50601f01601f1916929092016040019392505050565b600082198211156102e2576102e2610328565b500190565b60008261030457634e487b7160e01b600052601260045260246000fd5b500490565b600081600019048311821515161561032357610323610328565b500290565b634e487b7160e01b600052601160045260246000fd5b634e487b7160e01b600052604160045260246000fdfe|77|5b806312496a1b1461003a57603556a2646970667358221220f445f141227cd3210f57c2b91a0409e7af9909358857b0f676fa4929ab6fd44b64736f6c63430008070033'.replace('|', '')
     # # contractAddress = deploy(res[0], bytecode)
     # contract = web3.eth.contract(address=contractAddress, abi=res[0])
+    # print(contract.functions.toString(20).call())
+    # print(contract.functions.signed_average(5, 2).call())
     # print(contract.functions.min(100, 2).call())
     # print(contract.functions.computeAddress('0x7465737400000000000000000000000000000000000000000000000000000000', '0x7465737400000000000000000000000000000000000000000000000000000000').call())
     # # print(list(map(lambda x: hex(ord(x)), contract.functions.decode('MzM=').call().decode())))
@@ -457,23 +503,29 @@ if __name__ == '__main__':
     # # print(contract.functions.times(84007913129639935, 3332).call())
 
     # 批量测试
-    test_list = [0, 1, 2, 3, 4, 5, 6, 7, 8]
-    test_res = batch_test(test_list, 100)
-    csvName = 'testResult.csv'
-    try:
-        with open(csvName, 'a+', newline='', encoding='utf8') as csvFile:
-            csvWriter = csv.writer(csvFile)
-            csvWriter.writerow(['合并的文件: {}'.format(str(list(map(lambda x:x[0], test_res[1:-1]))))])
-            csvWriter.writerows(test_res)
-            csvWriter.writerow([])
-    except:
-        print("文件被占用")
+    # test_list = [0, 1]
+    # test_res = batch_test(test_list, 2)
+    # csvName = 'testResult.csv'
+    # try:
+    #     with open(csvName, 'a+', newline='', encoding='utf8') as csvFile:
+    #         csvWriter = csv.writer(csvFile)
+    #         csvWriter.writerow(['合并的文件: {}'.format(str(list(map(lambda x:x[0], test_res[1:-1]))))])
+    #         csvWriter.writerows(test_res)
+    #         csvWriter.writerow([])
+    # except:
+    #     print("文件被占用")
+
+    # test_lists = [[5, 6],
+    #               [0, 1, 2, 3], [4, 5, 6], [7, 8],
+    #               [0, 1, 2, 3, 4, 5, 6, 7, 8]]
+    # for test_list in test_lists:
+    #     test_res = batch_test(test_list, 100)
 
     # 验证base64等价性
     # lib = read_compiled_contract()
-    # source_temp = Addition(lib[1][2])
+    # source_temp = Addition(lib[6][2])
     # source = addition_to_source(source_temp)
-    # addition = Addition(lib[2][2])
+    # addition = Addition(lib[7][2])
     # source = combine_bytecode(source, addition)
     # print(test_equivalence(source, addition))
 
