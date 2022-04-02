@@ -1,19 +1,30 @@
 import random
+from json import JSONDecodeError
 from conbinPatch import Addition, addition_to_source, combine_bytecode, test_equivalence
 from utils import Hex, to_opcode
 import os
 import csv
 import opcodes as op
-from solcx import compile_files
+from solcx import compile_files, compile_source
 import json
 from creatContract import combine_by_index, deploy, web3, abi_bytecode
 import base64
+import requests
+import time
 
 random.seed(0)
 
 def is_push(opcode: str) -> bool:
     opcode_dec = int(opcode, 16)
     return int('60', 16) <= opcode_dec <= int('7F', 16)
+
+def csv_writer(csv_path: str, content: list, mode='w'):
+    try:
+        with open(csv_path, mode, newline='', encoding='utf8') as csvFile:
+            csvWriter = csv.writer(csvFile)
+            csvWriter.writerows(content)
+    except:
+        print("文件被占用")
 
 def save_valid_file(path: str, out_path: str):
     def is_valid(bytecode: str) -> bool:
@@ -27,14 +38,6 @@ def save_valid_file(path: str, out_path: str):
                 (start == 'a1' or start == 'a2' or start == 'a3' or start == 'a4'):
             return True
         return False
-
-    def csv_writer(csv_name: str, content: list):
-        try:
-            with open(csv_name, 'w', newline='', encoding='utf8') as csvFile:
-                csvWriter = csv.writer(csvFile)
-                csvWriter.writerows(content)
-        except:
-            print("文件被占用")
 
     if os.path.isfile(path):
         is_file = True
@@ -129,7 +132,7 @@ def test_divider(file_folder: str, out=True, by_year=False):
         print("{} 总计: {} 成功: {} 失败: {} 成功率: {:.2f}%".format(*curr))
 
 
-def test_combine(file_folder: str, out=True, by_year=False):
+def test_combine(file_folder: str, out=True, by_year=False, add_constructor=True, count_small_block=False):
     if os.path.isfile(file_folder):
         is_file = True
     elif os.path.isdir(file_folder):
@@ -156,7 +159,10 @@ def test_combine(file_folder: str, out=True, by_year=False):
 
     def _test(_file_path: str):
         counter_true = counter_false = 0
-        constructor = '61017e610030600b82828239805160001a6073146000811461002057610022565bfe5b5030600052607381538281f300'
+        if add_constructor:
+            constructor = '61017e610030600b82828239805160001a6073146000811461002057610022565bfe5b5030600052607381538281f300'
+        else:
+            constructor = ''
         file = open(_file_path, 'r', encoding='utf8')
         for i, line in enumerate(file.readlines()):
             if line.startswith('0x'):
@@ -189,10 +195,13 @@ def test_combine(file_folder: str, out=True, by_year=False):
                             if fb[start][1] == op.jumpdest:  # 不能碰到基本块
                                 if out:
                                     add.funs_impl.print_by_line(start, jump_num[-1])
+                                if count_small_block:  # 不中途跳出, 找出所有过小的基本块
+                                    small_block_num.append(1)
+                                    break
                                 raise OverflowError("没有足够的空间")
-                            if (curr_length >= min_trampoline_length - Hex('1') and fb[jump_num[-1]][1] == op.jump) or \
-                                    (curr_length >= min_trampoline_length - Hex('1') and fb[jump_num[-1] + 1][1] == op.jumpdest):
-                                break
+                            # if (curr_length >= min_trampoline_length - Hex('1') and fb[jump_num[-1]][1] == op.jump) or \
+                            #         (curr_length >= min_trampoline_length - Hex('1') and fb[jump_num[-1] + 1][1] == op.jumpdest):
+                            #     break
                             if curr_length >= min_trampoline_length:
                                 break
                             start -= 1
@@ -205,15 +214,20 @@ def test_combine(file_folder: str, out=True, by_year=False):
         return counter_true, counter_false
 
     test_res = []
+    small_block_num = [0]
     if is_file:
         temp = _test(file_folder)
-        test_res.append([file_folder, temp[0] + temp[1], temp[0], temp[1], temp[0] / (temp[0] + temp[1])])
+        test_res.append([file_folder, temp[0] + temp[1], temp[0], temp[1], temp[0]*100 / (temp[0] + temp[1])])
     else:
         for root, dirs, files in os.walk(file_folder):
             for file_name in files:
                 file_path = os.path.join(root, file_name)
                 temp = _test(file_path)
                 test_res.append([file_name, temp[0]+temp[1], temp[0], temp[1], temp[0]*100/(temp[0]+temp[1])])
+
+    if count_small_block:
+        print("无法合并的基本块数为:{}".format(sum(small_block_num)))
+        return
 
     if by_year:
         by_year_res = []
@@ -240,8 +254,8 @@ def test_combine(file_folder: str, out=True, by_year=False):
     for curr in test_res:
         print("{} 总计: {} 成功: {} 失败: {} 成功率: {:.2f}%".format(*curr))
 
-def get_length(folder: str):
-    tes_res = []
+def get_length(folder: str, by_year=True):
+    test_res = []
     for root, dirs, files in os.walk(folder):
         for file_name in files:
             file_path = os.path.join(root, file_name)
@@ -251,8 +265,24 @@ def get_length(folder: str):
             for line in file.readlines():
                 length += len(line)
                 i += 1
-            tes_res.append([file_name, length/i])
-    for curr_res in tes_res:
+            test_res.append([file_name, length/i])
+
+    if by_year:
+        by_year_res = []
+        pre_year = None
+        for i, test in enumerate(test_res):
+            curr_year = os.path.splitext(test[0])[0].split('_')[1]
+            assert curr_year.isnumeric() and 2000 < int(curr_year) < 2023, "错误的年份格式"
+            if pre_year is not None and curr_year == pre_year:
+                by_year_res[-1][1] += test[1]
+            else:
+                by_year_res.append([curr_year, test[1]])
+            pre_year = curr_year
+        test_res = by_year_res
+
+    test_res.append(['ALL', sum(map(lambda x: x[1], test_res[:]))/len(test_res)])
+
+    for curr_res in test_res:
         print("{} 平均长度: {}".format(*curr_res))
 
 def find_not_enough_block(_contract: str):
@@ -464,6 +494,78 @@ def batch_test(combine_order: list, amount_per_fun=10):
     return test_log
 
 
+def get_verified_contract(file: str, token: str, outpath: str):
+    file_path = os.path.join(outpath, 'verified_contract.txt')
+    res = []
+    with open(file, newline='') as f:
+        contract_reader = csv.reader(f)
+        for row in contract_reader:
+            try:
+                # 获取源码与版本好
+                base = 'https://api.etherscan.io/api?module=contract&action=getsourcecode'
+                address = '&address={}'.format(row[1])
+                apikey = '&token={}'.format(token)
+                url = base + address + apikey
+                httpData = requests.get(url).text
+                httpData = json.loads(httpData)
+                if httpData['status'] == '0':
+                    continue
+                contract_name = httpData['result'][0]['ContractName']
+                version = httpData['result'][0]['CompilerVersion']
+                source_code = httpData['result'][0]['SourceCode']
+                res.append([contract_name, version, source_code])
+                print("得到合约:{}, {}， {}".format(contract_name, version, [source_code]))
+                time.sleep(0.2)
+            except JSONDecodeError:
+                continue
+            except:
+                continue
+    with open(file_path, 'w') as f:
+        f.write(json.dumps(res))
+
+
+def compile_contract_optimize(file: str):
+    bytecode_on = []
+    bytecode_off = []
+    with open(file) as f:
+        contract_reader = json.loads(f.read())
+        for row in contract_reader:
+            version = row[1].split('+')[0][1:]
+            big_version = version.split('.')[1]
+            if big_version != '8':
+                continue
+            try:
+                compiled_on = compile_source(row[2], output_values=["abi", "bin"], solc_version='0.8.13',
+                                             optimize=True, optimize_runs=200)
+                compiled_off = compile_source(row[2], output_values=["abi", "bin"], solc_version='0.8.13',
+                                              optimize=False)
+            except:
+                continue
+            contracts_on = list(map(lambda x: x['bin'], compiled_on.values()))
+            contracts_off = list(map(lambda x: x['bin'], compiled_off.values()))
+            for contract_on in contracts_on:
+                if contract_on != '':
+                    bytecode_on.append('0x' + contract_on)
+            for contract_off in contracts_off:
+                if contract_off != '':
+                    bytecode_off.append('0x' + contract_off)
+    bytecode_on = list(set(bytecode_on))
+    bytecode_off = list(set(bytecode_off))
+    bytecode_on.sort()
+    bytecode_off.sort()
+    with open('verified_contract/compiled_on.txt', 'w') as f:
+        for row in bytecode_on:
+            f.write(row+'\n')
+    with open('verified_contract/compiled_off.txt', 'w') as f:
+        for row in bytecode_off:
+            f.write(row+'\n')
+
+def test_optimize(on_file: str, off_file, count_small_block):
+    test_combine(on_file, out=False, by_year=False, add_constructor=False, count_small_block=count_small_block)
+    print("------关闭优化------")
+    test_combine(off_file, out=False, by_year=False, add_constructor=False, count_small_block=count_small_block)
+
+
 if __name__ == '__main__':
     pass
     # 生成合法的测试用例
@@ -476,13 +578,10 @@ if __name__ == '__main__':
     # Addition(constructor+single)
 
     # 批量测试合并模块是否正常
-    # s = time.time()
-    # test_combine('valid_dataset', out=False, by_year=True)
-    # e = time.time()
-    # print(e-s)
+    test_combine('valid_dataset', out=False, by_year=True)
 
     # 测试平均长度
-    # get_length('valid_dataset')
+    # get_length('valid_dataset', by_year=True)
 
     # 测试批量编译模块
     update_compiled_contract()
@@ -539,9 +638,15 @@ if __name__ == '__main__':
     # _constructor = '61017e610030600b82828239805160001a6073146000811461002057610022565bfe5b5030600052607381538281f300'
     # Addition(_constructor+'61017e610030600b82828239805160001a6073146000811461002057610022565bfe5b5030600052607381538281f3006080604052600436106100435760003560e01c80633ccfd60b1461004f5780638da5cb5b1461006657806391fb54ca14610092578063f2fde38b146100b257600080fd5b3661004a57005b600080fd5b34801561005b57600080fd5b506100646100d2565b005b34801561007257600080fd5b50600054604080516001600160a01b039092168252519081900360200190f35b34801561009e57600080fd5b506100646100ad3660046103ad565b610142565b3480156100be57600080fd5b506100646100cd36600461038b565b610285565b6000546001600160a01b031633146101055760405162461bcd60e51b81526004016100fc90610479565b60405180910390fd5b600080546040516001600160a01b03909116914780156108fc02929091818181858888f1935050505015801561013f573d6000803e3d6000fd5b50565b6000546001600160a01b0316331461016c5760405162461bcd60e51b81526004016100fc90610479565b8051806101b25760405162461bcd60e51b81526020600482015260146024820152731059191c995cdcd95cc81b9bdd081c185cdcd95960621b60448201526064016100fc565b47806102005760405162461bcd60e51b815260206004820152601860248201527f5a65726f2062616c616e636520696e20636f6e7472616374000000000000000060448201526064016100fc565b600061020c83836104ae565b905060005b8381101561027e5784818151811061022b5761022b6104f9565b60200260200101516001600160a01b03166108fc839081150290604051600060405180830381858888f1935050505015801561026b573d6000803e3d6000fd5b5080610276816104d0565b915050610211565b5050505050565b6000546001600160a01b031633146102af5760405162461bcd60e51b81526004016100fc90610479565b6001600160a01b0381166103145760405162461bcd60e51b815260206004820152602660248201527f4f776e61626c653a206e6577206f776e657220697320746865207a65726f206160448201526564647265737360d01b60648201526084016100fc565b600080546040516001600160a01b03808516939216917f8be0079c531659141344cd1fd0a4f28419497f9722a3daafe3b4186f6b6457e091a3600080546001600160a01b0319166001600160a01b0392909216919091179055565b80356001600160a01b038116811461038657600080fd5b919050565b60006020828403121561039d57600080fd5b6103a68261036f565b9392505050565b600060208083850312156103c057600080fd5b823567ffffffffffffffff808211156103d857600080fd5b818501915085601f8301126103ec57600080fd5b8135818111156103fe576103fe61050f565b8060051b604051601f19603f830116810181811085821117156104235761042361050f565b604052828152858101935084860182860187018a101561044257600080fd5b600095505b8386101561046c576104588161036f565b855260019590950194938601938601610447565b5098975050505050505050565b6020808252818101527f4f776e61626c653a2063616c6c6572206973206e6f7420746865206f776e6572604082015260600190565b6000826104cb57634e487b7160e01b600052601260045260246000fd5b500490565b60006000198214156104f257634e487b7160e01b600052601160045260246000fd5b5060010190565b634e487b7160e01b600052603260045260246000fd5b634e487b7160e01b600052604160045260246000fdfea2646970667358221220594ba90ab1a8938f3f895b587b8a56160dd82a85f8823b4a95e1b9aec4a8a17964736f6c63430008070033')
 
-    # 3
-    # lib = read_compiled_contract()
-    # t_bytecode = addition_to_source(Addition(lib[1][2])).bytecode
-    # contractAddress = deploy(lib[1][1], t_bytecode)
-    # contract = web3.eth.contract(address=contractAddress, abi=lib[1][1])
-    # print(list(map(lambda x: hex(ord(x)), contract.functions.decode('M1Q=').call().decode())))
+    # 获取验证过的智能合约
+    # get_verified_contract('verified_contract/verified_contract_address.csv',
+    #                       'Q6CWCD15RD52NBDT4UZDJWX22R1QZMCFA5',
+    #                       'verified_contract')
+
+    # 使用开关优化, 分别获得编译后的字节码
+    # compile_contract_optimize('verified_contract/verified_contract.txt')
+
+    # 测试开关优化
+    # test_optimize('verified_contract/compiled_on.txt', 'verified_contract/compiled_off.txt', True)
+    # print()
+    # test_optimize('verified_contract/compiled_on.txt', 'verified_contract/compiled_off.txt', False)
