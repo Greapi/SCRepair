@@ -94,7 +94,7 @@ def test_divider(file_folder: str, out=True, by_year=False):
     error = []
     if is_file:
         temp = _test(file_folder)
-        test_res.append([file_folder, temp[0] + temp[1], temp[0], temp[1], temp[0] / (temp[0] + temp[1])])
+        test_res.append([file_folder, temp[0] + temp[1], temp[0], temp[1], temp[0] * 100 / (temp[0] + temp[1])])
     else:
         for root, dirs, files in os.walk(file_folder):
             for file_name in files:
@@ -167,8 +167,12 @@ def test_combine(file_folder: str, out=True, by_year=False, add_constructor=True
         for i, line in enumerate(file.readlines()):
             if line.startswith('0x'):
                 try:
-                    add = Addition(constructor + line[2:].strip())
-                    fb = add.funs_impl.formatted_bytecode
+                    try:
+                        add = Addition(constructor + line[2:].strip())
+                        fb = add.funs_impl.formatted_bytecode
+                    except:
+                        counter_false += 1
+                        continue
                     jump_nums = list()
                     for _i, opcode in enumerate(fb):
                         if opcode[1] == op.jump or opcode[1] == op.jumpi:
@@ -189,7 +193,7 @@ def test_combine(file_folder: str, out=True, by_year=False, add_constructor=True
                                     continue
                         # 找到填充蹦床的起始位置(start)
                         start = jump_num[0]  # 替换 jump(i) 本身, 从当前行开始
-                        min_trampoline_length = Hex('5')
+                        min_trampoline_length = Hex('4')
                         while True:
                             curr_length = blength_by_line(start, jump_num[-1], fb)
                             if fb[start][1] == op.jumpdest:  # 不能碰到基本块
@@ -199,17 +203,17 @@ def test_combine(file_folder: str, out=True, by_year=False, add_constructor=True
                                     small_block_num.append(1)
                                     break
                                 raise OverflowError("没有足够的空间")
-                            # if (curr_length >= min_trampoline_length - Hex('1') and fb[jump_num[-1]][1] == op.jump) or \
-                            #         (curr_length >= min_trampoline_length - Hex('1') and fb[jump_num[-1] + 1][1] == op.jumpdest):
-                            #     break
+                            if (curr_length >= min_trampoline_length - Hex('1') and fb[jump_num[-1]][1] == op.jump) or \
+                                    (curr_length >= min_trampoline_length - Hex('1') and fb[jump_num[-1] + 1][1] == op.jumpdest):
+                                break
                             if curr_length >= min_trampoline_length:
                                 break
                             start -= 1
                     counter_true += 1
                 except OverflowError:
                     counter_false += 1
-                except:
-                    pass
+                # except:
+                #     pass
 
         return counter_true, counter_false
 
@@ -501,7 +505,7 @@ def get_verified_contract(file: str, token: str, outpath: str):
         contract_reader = csv.reader(f)
         for row in contract_reader:
             try:
-                # 获取源码与版本好
+                # 获取源码与版本号
                 base = 'https://api.etherscan.io/api?module=contract&action=getsourcecode'
                 address = '&address={}'.format(row[1])
                 apikey = '&token={}'.format(token)
@@ -543,16 +547,20 @@ def compile_contract_optimize(file: str):
                 continue
             contracts_on = list(map(lambda x: x['bin'], compiled_on.values()))
             contracts_off = list(map(lambda x: x['bin'], compiled_off.values()))
-            for contract_on in contracts_on:
-                if contract_on != '':
-                    bytecode_on.append('0x' + contract_on)
-            for contract_off in contracts_off:
-                if contract_off != '':
-                    bytecode_off.append('0x' + contract_off)
-    bytecode_on = list(set(bytecode_on))
-    bytecode_off = list(set(bytecode_off))
-    bytecode_on.sort()
-    bytecode_off.sort()
+            assert len(contracts_on) == len(contracts_off), '编译结果不相同'
+            for i in range(len(contracts_on)):
+                if contracts_on[i] != '' and contracts_off[i] != '':
+                    code_on = contracts_on[i]
+                    code_off = contracts_off[i]
+                    try:
+                        var = Addition(code_on).funs_impl.formatted_bytecode
+                        var = Addition(code_off).funs_impl.formatted_bytecode
+                    except:
+                        continue
+                    bytecode_on.append('0x' + code_on)
+                    bytecode_off.append('0x' + code_off)
+    bytecode_on = sorted(set(bytecode_on), key=bytecode_on.index)
+    bytecode_off = sorted(set(bytecode_off), key=bytecode_off.index)
     with open('verified_contract/compiled_on.txt', 'w') as f:
         for row in bytecode_on:
             f.write(row+'\n')
@@ -584,11 +592,11 @@ if __name__ == '__main__':
     # get_length('valid_dataset', by_year=True)
 
     # 测试批量编译模块
-    update_compiled_contract()
+    # update_compiled_contract()
     # print(*[[i, con] for i, con in enumerate(read_compiled_contract())], sep='\n')
 
     # 单次测试
-    # res = combine_by_index([6, 7], read_compiled_contract())
+    # res = combine_by_index([0, 1], read_compiled_contract())
     # contractAddress = deploy(*res)
     # # bytecode = '608060405234801561001057600080fd5b506103d9806100206000396000f30073000000000000000000000000000000000000000030146080604052600436106100355760003560e01c|68000000000000000356|565b600080fd5b61004d6100483660046101c9565b610063565b60405161005a919061027a565b60405180910390f35b606081516000141561008357505060408051602081019091526000815290565b600060405180606001604052806040815260200161035560409139905060006003845160026100b291906102cf565b6100bc91906102e7565b6100c7906004610309565b905060006100d68260206102cf565b67ffffffffffffffff8111156100ee576100ee61033e565b6040519080825280601f01601f191660200182016040528015610118576020820181803683370190505b509050818152600183018586518101602084015b81831015610184576003830192508251603f8160121c168501518253600182019150603f81600c1c168501518253600182019150603f8160061c168501518253600182019150603f811685015182535060010161012c565b60038951066001811461019e57600281146101af576101bb565b613d3d60f01b6001198301526101bb565b603d60f81b6000198301525b509398975050505050505050565b6000602082840312156101db57600080fd5b813567ffffffffffffffff808211156101f357600080fd5b818401915084601f83011261020757600080fd5b8135818111156102195761021961033e565b604051601f8201601f19908116603f011681019083821181831017156102415761024161033e565b8160405282815287602084870101111561025a57600080fd5b826020860160208301376000928101602001929092525095945050505050565b600060208083528351808285015260005b818110156102a75785810183015185820160400152820161028b565b818111156102b9576000604083870101525b50601f01601f1916929092016040019392505050565b600082198211156102e2576102e2610328565b500190565b60008261030457634e487b7160e01b600052601260045260246000fd5b500490565b600081600019048311821515161561032357610323610328565b500290565b634e487b7160e01b600052601160045260246000fd5b634e487b7160e01b600052604160045260246000fdfe|77|5b806312496a1b1461003a57603556a2646970667358221220f445f141227cd3210f57c2b91a0409e7af9909358857b0f676fa4929ab6fd44b64736f6c63430008070033'.replace('|', '')
     # # contractAddress = deploy(res[0], bytecode)
